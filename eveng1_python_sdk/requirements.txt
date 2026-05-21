@@ -1,0 +1,4 @@
+bleak>=0.21.1
+rich>=13.7.0
+asyncio>=3.4.3 
+setuptools>=65.5.1 

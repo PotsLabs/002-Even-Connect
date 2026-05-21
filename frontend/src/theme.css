@@ -1,0 +1,114 @@
+/* =====================================================
+   DESIGN TOKENS — Pots Labs Light
+   File: theme.css  |  Mode: light
+   -------------------------------------------------------
+   HOW TO USE IN ANY REACT PROJECT
+   --------------------------------
+   1. Copy this file into src/
+   2. Add to your entry CSS:  @import './theme.css';
+   3. Reference tokens anywhere:  color: var(--accent);
+
+   TOKEN REFERENCE
+   ---------------
+   SURFACES
+     --bg              Page / root background
+     --surface         Cards, panels, sidebars
+     --surface-alt     Chips, inset containers, zebra rows
+     --border          Dividing lines, input borders, outlines
+
+   ACCENT
+     --accent          Primary interactive colour (buttons, links, focus rings)
+     --accent-hover    Darker shade for hover / active states
+     --accent-dim      Translucent tint for highlighted backgrounds
+
+   TEXT
+     --text            High-emphasis body copy
+     --muted           Low-emphasis labels, placeholders, captions
+
+   STATUS
+     --green           Success
+     --red             Error / destructive
+     --yellow          Warning / in-progress
+
+   TYPOGRAPHY
+     --font-heading    Rajdhani — use on h1–h6
+     --font-body       Jost — use on everything else
+     --font-mono       System monospace — use in code / terminals
+     Weights: 300 light · 400 regular · 500 medium · 600 semi-bold · 700 bold
+
+   NOTES FOR AI AGENTS
+   -------------------
+   - All colour values are hex or rgba only — no hsl / oklch.
+   - The primitive scale (_p-* vars) below maps names → raw values.
+     Never use _p-* vars directly in component CSS; use semantic tokens.
+   - To add a dark-mode variant, duplicate :root as [data-theme="dark"]
+     and swap semantic token values only — the _p-* scale stays unchanged.
+   ===================================================== */
+
+/* 1. Font imports ---------------------------------------------------- */
+@import url('https://fonts.googleapis.com/css2?family=Rajdhani:wght@400;500;600;700&family=Jost:ital,wght@0,300;0,400;0,500;0,600;1,400&display=swap');
+
+/* 2. Primitive scale (internal — do not use in component CSS) -------- */
+:root {
+  --_p-white:       #ffffff;
+  --_p-gray-50:     #fcfcfc;
+  --_p-gray-100:    #ececec;
+  --_p-gray-400:    #a4a4a4;
+  --_p-gray-600:    #6b6b6b;
+  --_p-gray-900:    #111111;
+  --_p-blue-600:    #002de0;
+  --_p-blue-700:    #0024b8;
+  --_p-blue-100:    rgba(0, 45, 224, 0.08);
+  --_p-green-600:   #16a34a;
+  --_p-red-600:     #dc2626;
+  --_p-amber-500:   #d97706;
+}
+
+/* 3. Semantic tokens ------------------------------------------------- */
+:root {
+  /* Surfaces
+     Design language: borderless — use background fill alone for elevation.
+     --card is intentionally darker than --surface so cards read without borders. */
+  --bg:             var(--_p-white);
+  --surface:        var(--_p-gray-50);     /* subtle off-white panels           */
+  --surface-alt:    var(--_p-gray-100);    /* inset / chip backgrounds          */
+  --card:           #e8e8e8;               /* main card fill — borderless       */
+  --border:         var(--_p-gray-400);    /* kept for functional UI (inputs…)  */
+
+  /* Accent */
+  --accent:         var(--_p-blue-600);
+  --accent-hover:   var(--_p-blue-700);
+  --accent-dim:     var(--_p-blue-100);
+
+  /* Aliases kept for backward-compat with existing component vars */
+  --sidebar:        transparent;           /* wallpaper shows through sidebar   */
+
+  /* Text */
+  --text:           var(--_p-gray-900);
+  --muted:          var(--_p-gray-600);
+
+  /* Status */
+  --green:          var(--_p-green-600);
+  --red:            var(--_p-red-600);
+  --yellow:         var(--_p-amber-500);
+
+  /* Typography */
+  --font-heading:   'Rajdhani', 'Futura', 'Century Gothic', system-ui, sans-serif;
+  --font-body:      'Jost', 'Futura', 'Century Gothic', system-ui, sans-serif;
+  --font-mono:      'JetBrains Mono', 'Fira Code', 'SF Mono', ui-monospace,
+                    Consolas, 'Courier New', monospace;
+}
+
+/* 4. Base typography ------------------------------------------------- */
+:root {
+  font-family:              var(--font-body);
+  font-size:                14px;
+  color:                    var(--text);
+  -webkit-font-smoothing:   antialiased;
+  -moz-osx-font-smoothing:  grayscale;
+}
+
+h1, h2, h3, h4, h5, h6 {
+  font-family: var(--font-heading);
+  font-weight: 600;
+}
