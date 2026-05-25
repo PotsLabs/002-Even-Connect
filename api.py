@@ -245,6 +245,63 @@ async def _sync_time(manager) -> None:
         await manager.right_glass.send(cmd)
 
 
+# ── Touchpad / state event broadcast ──────────────────────────────────────
+# All 0xF5 subcommand codes the glasses can send.
+_INTERACTION_LABELS: dict[int, str] = {
+    0x00: "Double Tap",
+    0x01: "Single Tap",
+    0x02: "Dashboard Open",
+    0x03: "Dashboard Close",
+    0x04: "Silent Mode On",
+    0x05: "Silent Mode Off",
+    0x06: "Worn",
+    0x07: "Taken Off",
+    0x08: "Cradle Open",
+    0x09: "Cradle Charged",
+    0x0B: "Cradle Closed",
+    0x11: "Device Connected",
+    0x17: "Long Press",
+    0x18: "Long Press Released",
+    0x1E: "Dashboard Confirmed Open",
+    0x1F: "Dashboard Confirmed Close",
+}
+
+# One asyncio.Queue per active SSE subscriber — broadcasts to all open tabs.
+_event_subscribers: list[asyncio.Queue] = []
+
+
+def _broadcast(line: str) -> None:
+    for q in _event_subscribers:
+        try:
+            q.put_nowait(line)
+        except asyncio.QueueFull:
+            pass
+
+
+async def _glass_event_handler(glass, sender, data: bytes) -> None:
+    """Installed on each Glass after connect; routes touchpad events to the SSE stream."""
+    if not data or len(data) < 2:
+        return
+    cmd = data[0]
+    if cmd == 0xF5:
+        code = data[1]
+        label = _INTERACTION_LABELS.get(code, f"0x{code:02x}")
+        _broadcast(f"INFO:touchpad:{glass.side} — {label}")
+    elif cmd == 0x27 and len(data) >= 2:
+        # GLASSES_WEAR command (separate from 0xF5)
+        status_byte = data[1]
+        label = "Worn" if status_byte == 0x01 else "Taken Off"
+        _broadcast(f"INFO:wear:{glass.side} — {label}")
+
+
+def _install_event_handlers(mgr) -> None:
+    """Attach the event handler to both glasses after a successful connect."""
+    if mgr.left_glass:
+        mgr.left_glass.notification_handler = _glass_event_handler
+    if mgr.right_glass:
+        mgr.right_glass.notification_handler = _glass_event_handler
+
+
 async def _send_text(manager, text_message: str, duration: float = 5) -> None:
     """Send text using the correct 0x70 Text Show status, not the EvenAI 0x30 status."""
     lines = format_text_lines(text_message)
@@ -357,6 +414,7 @@ async def connect():
         if not connected:
             raise HTTPException(status_code=503, detail="No glasses found during scan")
         await _sync_time(manager)
+        _install_event_handlers(manager)
         return _connection_status()
     finally:
         is_connecting = False
@@ -404,6 +462,7 @@ async def connect_stream():
             connected = await manager.scan_and_connect(timeout=12)
             if connected:
                 await _sync_time(manager)
+                _install_event_handlers(manager)
             result["status"] = _connection_status()
             result["success"] = connected
         except Exception as exc:
@@ -448,6 +507,33 @@ async def connect_stream():
 async def disconnect():
     await manager.disconnect_all()
     return {"connected": False}
+
+
+@app.get("/api/events/stream")
+async def events_stream():
+    """SSE stream of touchpad and wear events from the glasses."""
+    q: asyncio.Queue[str] = asyncio.Queue(maxsize=200)
+    _event_subscribers.append(q)
+
+    async def _generate():
+        try:
+            while True:
+                try:
+                    line = await asyncio.wait_for(q.get(), timeout=20.0)
+                    yield f"data: {line}\n\n"
+                except asyncio.TimeoutError:
+                    yield ": keepalive\n\n"
+        finally:
+            try:
+                _event_subscribers.remove(q)
+            except ValueError:
+                pass
+
+    return StreamingResponse(
+        _generate(),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
 
 
 class TextPayload(BaseModel):

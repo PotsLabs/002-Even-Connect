@@ -39,6 +39,17 @@ export default function App() {
   const addLog = useCallback((line) => setLogs((prev) => [...prev, line]), [])
   const clearLogs = useCallback(() => setLogs([]), [])
 
+  // Stream touchpad / wear events from the glasses into the activity log
+  useEffect(() => {
+    if (!status.connected) return
+    const es = new EventSource('/api/events/stream')
+    es.onmessage = (e) => {
+      if (e.data && e.data.trim()) addLog(e.data)
+    }
+    es.onerror = () => {}  // reconnects automatically; suppress noise
+    return () => es.close()
+  }, [status.connected, addLog])
+
   const sharedProps = { status, addToast, addLog }
 
   return (
