@@ -1,20 +1,23 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import './App.css'
 import { api } from './api'
+import ComposeTab from './components/ComposeTab'
 import Home from './components/Home'
 import ImageTab from './components/ImageTab'
 import TextTab from './components/TextTab'
 
 const TABS = [
-  { id: 'home',  label: 'Home',  icon: <IconHome /> },
-  { id: 'image', label: 'Image', icon: <IconImage /> },
-  { id: 'text',  label: 'Text',  icon: <IconText /> },
+  { id: 'home',    label: 'Home',    icon: <IconHome /> },
+  { id: 'image',   label: 'Image',   icon: <IconImage /> },
+  { id: 'compose', label: 'Compose', icon: <IconCompose /> },
+  { id: 'text',    label: 'Text',    icon: <IconText /> },
 ]
 
 export default function App() {
   const [tab, setTab] = useState('home')
   const [status, setStatus] = useState({ connected: false, left: false, right: false })
   const [toasts, setToasts] = useState([])
+  const [logs, setLogs] = useState([])
   const toastIdRef = useRef(0)
 
   // Poll connection status every 4 s
@@ -33,7 +36,10 @@ export default function App() {
     setTimeout(() => setToasts((prev) => prev.filter((t) => t.id !== id)), 3500)
   }, [])
 
-  const sharedProps = { status, addToast }
+  const addLog = useCallback((line) => setLogs((prev) => [...prev, line]), [])
+  const clearLogs = useCallback(() => setLogs([]), [])
+
+  const sharedProps = { status, addToast, addLog }
 
   return (
     <div className="layout">
@@ -62,9 +68,10 @@ export default function App() {
 
       {/* Main */}
       <main className="main">
-        {tab === 'home'  && <Home  {...sharedProps} onStatusChange={setStatus} />}
-        {tab === 'image' && <ImageTab {...sharedProps} />}
-        {tab === 'text'  && <TextTab  {...sharedProps} />}
+        {tab === 'home'    && <Home       {...sharedProps} onStatusChange={setStatus} logs={logs} clearLogs={clearLogs} />}
+        {tab === 'image'   && <ImageTab   {...sharedProps} />}
+        {tab === 'compose' && <ComposeTab {...sharedProps} />}
+        {tab === 'text'    && <TextTab    {...sharedProps} />}
       </main>
 
       {/* Toast notifications */}
@@ -92,6 +99,17 @@ function IconImage() {
       <rect x="3" y="3" width="18" height="18" rx="2" />
       <circle cx="8.5" cy="8.5" r="1.5" />
       <polyline points="21 15 16 10 5 21" />
+    </svg>
+  )
+}
+
+function IconCompose() {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <rect x="3" y="3" width="18" height="18" rx="2" />
+      <line x1="8" y1="12" x2="16" y2="12" />
+      <line x1="8" y1="8" x2="13" y2="8" />
+      <line x1="8" y1="16" x2="14" y2="16" />
     </svg>
   )
 }

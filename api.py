@@ -6,6 +6,7 @@ import logging
 import sys
 import os
 import zlib
+from datetime import datetime
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "even_glasses"))
 
@@ -15,7 +16,7 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse, StreamingResponse
 import numpy as np
 from pydantic import BaseModel
-from PIL import Image, ImageFilter, ImageOps
+from PIL import Image, ImageDraw, ImageFilter, ImageFont, ImageOps
 
 from even_glasses.bluetooth_manager import GlassesManager
 from even_glasses.commands import format_text_lines, send_text_packet
@@ -45,6 +46,103 @@ def _invert_bmp(bmp_data: bytes) -> bytes:
     img = ImageOps.invert(Image.open(io.BytesIO(bmp_data)).convert("L"))
     buf = io.BytesIO()
     img.convert("1").save(buf, format="BMP")
+    return buf.getvalue()
+
+
+def _to_ready_bmp(image_bytes: bytes) -> bytes:
+    """Single-pass: resize, threshold, and invert — skips the double PIL round-trip."""
+    img = Image.open(io.BytesIO(image_bytes)).convert("L")
+    img.thumbnail((_IMG_W, _IMG_H), Image.LANCZOS)
+    canvas = Image.new("L", (_IMG_W, _IMG_H), 0)
+    canvas.paste(img, ((_IMG_W - img.width) // 2, (_IMG_H - img.height) // 2))
+    # Invert threshold inline: dark where bright → matches glasses display polarity
+    bmp_img = canvas.point(lambda p: 0 if p > 64 else 255).convert("1")
+    buf = io.BytesIO()
+    bmp_img.save(buf, format="BMP")
+    return buf.getvalue()
+
+
+# ── Precomputed frame cache ────────────────────────────────────────────────
+# Stores ready-to-transmit frames keyed by client-provided ID.
+# Shape: {id: {"mode": str, "frames": list[bytes], "crc": bytes}
+#              or {"mode": "stereo", "left_frames": ..., "right_frames": ...,
+#                  "left_crc": ..., "right_crc": ...}}
+_frame_cache: dict[str, dict] = {}
+
+# ── Font utilities for compose ─────────────────────────────────────────────
+_FONT_PATHS = [
+    "/System/Library/Fonts/SFNS.ttf",
+    "/System/Library/Fonts/Helvetica.ttc",
+    "/System/Library/Fonts/HelveticaNeue.ttc",
+    "/Library/Fonts/Arial.ttf",
+    "/System/Library/Fonts/Supplemental/Arial.ttf",
+    "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+    "/usr/share/fonts/truetype/liberation/LiberationSans-Regular.ttf",
+    "C:/Windows/Fonts/arial.ttf",
+]
+
+_font_cache: dict[int, ImageFont.FreeTypeFont] = {}
+
+
+def _get_font(size: int) -> ImageFont.FreeTypeFont:
+    if size in _font_cache:
+        return _font_cache[size]
+    for path in _FONT_PATHS:
+        if not os.path.exists(path):
+            continue
+        try:
+            kw = {"index": 0} if path.endswith(".ttc") else {}
+            font = ImageFont.truetype(path, size, **kw)
+            _font_cache[size] = font
+            return font
+        except Exception:
+            continue
+    try:
+        font = ImageFont.load_default(size=size)
+    except TypeError:
+        font = ImageFont.load_default()
+    _font_cache[size] = font
+    return font
+
+
+def _compose_bmp(background_b64: str, blocks: list) -> bytes:
+    """Composite a background image + text layers into a 576×136 ready-to-transmit BMP."""
+    if background_b64:
+        img = Image.open(io.BytesIO(base64.b64decode(background_b64))).convert("L")
+        img.thumbnail((_IMG_W, _IMG_H), Image.LANCZOS)
+        canvas = Image.new("L", (_IMG_W, _IMG_H), 0)
+        canvas.paste(img, ((_IMG_W - img.width) // 2, (_IMG_H - img.height) // 2))
+    else:
+        canvas = Image.new("L", (_IMG_W, _IMG_H), 0)
+
+    draw = ImageDraw.Draw(canvas)
+
+    for block in blocks:
+        text = block.text.strip()
+        if not text:
+            continue
+        font = _get_font(block.size)
+        fill = 255 if block.color == "light" else 0
+
+        bbox = draw.multiline_textbbox((0, 0), text, font=font, spacing=2)
+        tw, th = bbox[2] - bbox[0], bbox[3] - bbox[1]
+
+        v, _, h = block.position.partition("-")
+        pad = block.padding
+
+        if h == "left":    x = pad
+        elif h == "center": x = max(0, (_IMG_W - tw) // 2)
+        else:              x = max(0, _IMG_W - tw - pad)
+
+        if v == "top":     y = pad
+        elif v == "middle": y = max(0, (_IMG_H - th) // 2)
+        else:              y = max(0, _IMG_H - th - pad)
+
+        draw.multiline_text((x, y), text, font=font, fill=fill, spacing=2)
+
+    bmp_img = canvas.point(lambda p: 0 if p > 64 else 255).convert("1")
+    buf = io.BytesIO()
+    bmp_img.save(buf, format="BMP")
     return buf.getvalue()
 
 
@@ -114,6 +212,37 @@ def _to_stereo_bmp_pair(
 
 
 _TEXT_SHOW = 0x71  # 0x70 (Text Show) | 0x01 (New Content)
+
+# Weekday mapping: Python's weekday() is 0=Mon…6=Sun; glasses expect 0=Sun…6=Sat
+_PY_TO_GLASS_WEEKDAY = [1, 2, 3, 4, 5, 6, 0]
+
+
+def _construct_time_sync() -> bytes:
+    """Build the Even G1 INIT (0x4D) time-sync packet from the current system time."""
+    now = datetime.now()
+    year = now.year
+    return bytes([
+        0x4D,                    # Command: INIT / time sync
+        0x0B, 0x00,              # Payload length: 11 bytes, little-endian
+        year & 0xFF,             # Year low byte
+        (year >> 8) & 0xFF,      # Year high byte
+        now.month,
+        now.day,
+        now.hour,
+        now.minute,
+        now.second,
+        _PY_TO_GLASS_WEEKDAY[now.weekday()],
+        0x00, 0x00,              # Reserved
+    ])
+
+
+async def _sync_time(manager) -> None:
+    """Send the current system time to both glasses."""
+    cmd = _construct_time_sync()
+    if manager.left_glass and manager.left_glass.client.is_connected:
+        await manager.left_glass.send(cmd)
+    if manager.right_glass and manager.right_glass.client.is_connected:
+        await manager.right_glass.send(cmd)
 
 
 async def _send_text(manager, text_message: str, duration: float = 5) -> None:
@@ -227,6 +356,7 @@ async def connect():
         connected = await manager.scan_and_connect(timeout=12)
         if not connected:
             raise HTTPException(status_code=503, detail="No glasses found during scan")
+        await _sync_time(manager)
         return _connection_status()
     finally:
         is_connecting = False
@@ -272,6 +402,8 @@ async def connect_stream():
         try:
             manager = GlassesManager()
             connected = await manager.scan_and_connect(timeout=12)
+            if connected:
+                await _sync_time(manager)
             result["status"] = _connection_status()
             result["success"] = connected
         except Exception as exc:
@@ -359,6 +491,167 @@ async def send_image_endpoint(payload: ImagePayload):
         raise HTTPException(status_code=502, detail=f"Image transfer failed on: {', '.join(failed)}")
 
     return {"success": True}
+
+
+# ── Precompute endpoints ───────────────────────────────────────────────────
+
+class PrecomputeItem(BaseModel):
+    id: str
+    imageData: str
+    mode: str = "standard"
+    maxDisparity: int   = 6
+    blurRadius:   float = 3.0
+    invertDepth:  bool  = False
+
+class PrecomputePayload(BaseModel):
+    images: list[PrecomputeItem]
+
+
+@app.post("/api/queue/precompute")
+async def precompute_queue(payload: PrecomputePayload):
+    """Convert images to transmit-ready frames in a thread pool and cache them."""
+    loop = asyncio.get_running_loop()
+    results, errors = [], []
+
+    for item in payload.images:
+        try:
+            img_bytes = base64.b64decode(item.imageData)
+            if item.mode == "stereo":
+                left_bmp, right_bmp = await loop.run_in_executor(
+                    None, _to_stereo_bmp_pair,
+                    img_bytes, item.maxDisparity, item.blurRadius, item.invertDepth,
+                )
+                _frame_cache[item.id] = {
+                    "mode": "stereo",
+                    "left_frames":  _build_image_frames(left_bmp),
+                    "right_frames": _build_image_frames(right_bmp),
+                    "left_crc":     _crc_command(left_bmp),
+                    "right_crc":    _crc_command(right_bmp),
+                }
+            else:
+                bmp_data = await loop.run_in_executor(None, _to_ready_bmp, img_bytes)
+                _frame_cache[item.id] = {
+                    "mode":   "standard",
+                    "frames": _build_image_frames(bmp_data),
+                    "crc":    _crc_command(bmp_data),
+                }
+            results.append(item.id)
+        except Exception as e:
+            errors.append({"id": item.id, "error": str(e)})
+
+    return {"precomputed": results, "errors": errors}
+
+
+@app.post("/api/send-precomputed/{image_id}")
+async def send_precomputed(image_id: str):
+    """Transmit a previously precomputed image — no PIL work on the hot path."""
+    if image_id not in _frame_cache:
+        raise HTTPException(status_code=404, detail="Image not precomputed — add it via /api/queue/precompute first")
+
+    status = _connection_status()
+    if not status["connected"]:
+        raise HTTPException(status_code=503, detail="Glasses not connected")
+
+    left_glass  = manager.left_glass
+    right_glass = manager.right_glass
+    if not left_glass or not right_glass:
+        raise HTTPException(status_code=503, detail="Both glasses must be connected")
+
+    cached  = _frame_cache[image_id]
+    end_cmd = bytes([0x20, 0x0D, 0x0E])
+
+    if cached["mode"] == "stereo":
+        left_ok, right_ok = await asyncio.gather(
+            _send_image_to_glass(left_glass,  cached["left_frames"],  end_cmd, cached["left_crc"]),
+            _send_image_to_glass(right_glass, cached["right_frames"], end_cmd, cached["right_crc"]),
+        )
+    else:
+        left_ok, right_ok = await asyncio.gather(
+            _send_image_to_glass(left_glass,  cached["frames"], end_cmd, cached["crc"]),
+            _send_image_to_glass(right_glass, cached["frames"], end_cmd, cached["crc"]),
+        )
+
+    if not (left_ok and right_ok):
+        failed = (["left"] if not left_ok else []) + (["right"] if not right_ok else [])
+        raise HTTPException(status_code=502, detail=f"Transfer failed on: {', '.join(failed)}")
+
+    return {"success": True}
+
+
+@app.delete("/api/queue/precomputed/{image_id}")
+async def delete_precomputed(image_id: str):
+    _frame_cache.pop(image_id, None)
+    return {"deleted": image_id}
+
+
+# ── Compose endpoints ──────────────────────────────────────────────────────
+
+class TextBlock(BaseModel):
+    text:     str
+    position: str = "bottom-left"
+    size:     int = 18
+    color:    str = "light"   # "light" → fill=255 in canvas; "dark" → fill=0
+    padding:  int = 6
+
+class ComposePayload(BaseModel):
+    backgroundData: str = ""
+    blocks: list[TextBlock]
+
+
+def _bmp_to_preview_png(bmp_data: bytes) -> str:
+    img = Image.open(io.BytesIO(bmp_data)).convert("RGB")
+    buf = io.BytesIO()
+    img.save(buf, format="PNG")
+    return "data:image/png;base64," + base64.b64encode(buf.getvalue()).decode()
+
+
+@app.post("/api/preview-compose")
+async def preview_compose(payload: ComposePayload):
+    try:
+        loop = asyncio.get_running_loop()
+        bmp = await loop.run_in_executor(None, _compose_bmp, payload.backgroundData, payload.blocks)
+        return {"preview": _bmp_to_preview_png(bmp)}
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Compose failed: {e}")
+
+
+@app.post("/api/send-compose")
+async def send_compose(payload: ComposePayload):
+    status = _connection_status()
+    if not status["connected"]:
+        raise HTTPException(status_code=503, detail="Glasses not connected")
+    left_glass  = manager.left_glass
+    right_glass = manager.right_glass
+    if not left_glass or not right_glass:
+        raise HTTPException(status_code=503, detail="Both glasses must be connected")
+    try:
+        loop = asyncio.get_running_loop()
+        bmp = await loop.run_in_executor(None, _compose_bmp, payload.backgroundData, payload.blocks)
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Compose failed: {e}")
+    result = await _transmit_image(left_glass, right_glass, bmp)
+    if not all(result.values()):
+        failed = [s for s, ok in result.items() if not ok]
+        raise HTTPException(status_code=502, detail=f"Transfer failed on: {', '.join(failed)}")
+    return {"success": True}
+
+
+@app.post("/api/precompute-compose")
+async def precompute_compose(payload: ComposePayload):
+    """Compose, cache frames, and return an ID + PNG thumbnail for the queue."""
+    import uuid as _uuid
+    try:
+        loop = asyncio.get_running_loop()
+        bmp = await loop.run_in_executor(None, _compose_bmp, payload.backgroundData, payload.blocks)
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Compose failed: {e}")
+    image_id = str(_uuid.uuid4())
+    _frame_cache[image_id] = {
+        "mode":   "standard",
+        "frames": _build_image_frames(bmp),
+        "crc":    _crc_command(bmp),
+    }
+    return {"id": image_id, "preview": _bmp_to_preview_png(bmp)}
 
 
 @app.post("/api/preview-bmp")

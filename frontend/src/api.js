@@ -15,8 +15,19 @@ export const api = {
   connect:      ()       => request('/connect',      { method: 'POST' }),
   disconnect:   ()       => request('/disconnect',   { method: 'POST' }),
   sendText:     (text)   => request('/send-text',    { method: 'POST', body: JSON.stringify({ text }) }),
-  sendImage:       (b64)              => request('/send-image',        { method: 'POST', body: JSON.stringify({ imageData: b64 }) }),
-  previewBmp:      (b64)              => request('/preview-bmp',       { method: 'POST', body: JSON.stringify({ imageData: b64 }) }),
-  sendStereoImage: (b64, params) => request('/send-stereo-image',  { method: 'POST', body: JSON.stringify({ imageData: b64, ...params }) }),
-  previewStereoBmp:(b64, params) => request('/preview-stereo-bmp', { method: 'POST', body: JSON.stringify({ imageData: b64, ...params }) }),
+
+  sendImage:        (b64)          => request('/send-image',        { method: 'POST', body: JSON.stringify({ imageData: b64 }) }),
+  previewBmp:       (b64)          => request('/preview-bmp',       { method: 'POST', body: JSON.stringify({ imageData: b64 }) }),
+  sendStereoImage:  (b64, params)  => request('/send-stereo-image', { method: 'POST', body: JSON.stringify({ imageData: b64, ...params }) }),
+  previewStereoBmp: (b64, params)  => request('/preview-stereo-bmp',{ method: 'POST', body: JSON.stringify({ imageData: b64, ...params }) }),
+
+  // Precomputed frame cache
+  precompute:       (images)  => request('/queue/precompute', { method: 'POST', body: JSON.stringify({ images }) }),
+  sendPrecomputed:  (id)      => request(`/send-precomputed/${id}`, { method: 'POST' }),
+  deletePrecomputed:(id)      => request(`/queue/precomputed/${id}`, { method: 'DELETE' }),
+
+  // Compose (background + text layers)
+  previewCompose:     (backgroundData, blocks) => request('/preview-compose',    { method: 'POST', body: JSON.stringify({ backgroundData, blocks }) }),
+  sendCompose:        (backgroundData, blocks) => request('/send-compose',       { method: 'POST', body: JSON.stringify({ backgroundData, blocks }) }),
+  precomputeCompose:  (backgroundData, blocks) => request('/precompute-compose', { method: 'POST', body: JSON.stringify({ backgroundData, blocks }) }),
 }

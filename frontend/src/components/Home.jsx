@@ -1,9 +1,9 @@
 import { useRef, useState } from 'react'
+// useState kept for scanning/busy local state
 import { api } from '../api'
 import Terminal from './Terminal'
 
-export default function Home({ status, onStatusChange, addToast }) {
-  const [logs, setLogs] = useState([])
+export default function Home({ status, onStatusChange, addToast, addLog, logs, clearLogs }) {
   const [scanning, setScanning] = useState(false)
   const [busy, setBusy] = useState(false)
   const abortRef = useRef(null)
@@ -14,7 +14,7 @@ export default function Home({ status, onStatusChange, addToast }) {
     const ctrl = new AbortController()
     abortRef.current = ctrl
 
-    setLogs([])
+    addLog('---')
     setScanning(true)
     setBusy(true)
 
@@ -58,12 +58,15 @@ export default function Home({ status, onStatusChange, addToast }) {
           }
 
           if (payload.trim()) {
-            setLogs((prev) => [...prev, payload])
+            addLog(payload)
           }
         }
       }
     } catch (err) {
-      if (err.name !== 'AbortError') addToast(err.message, 'error')
+      if (err.name !== 'AbortError') {
+        addToast(err.message, 'error')
+        addLog(`ERROR:connect:${err.message}`)
+      }
     } finally {
       setScanning(false)
       setBusy(false)
@@ -144,11 +147,8 @@ export default function Home({ status, onStatusChange, addToast }) {
           </button>
         )}
         {logs.length > 0 && !scanning && (
-          <button
-            className="btn btn-ghost btn-sm"
-            onClick={() => setLogs([])}
-          >
-            Clear
+          <button className="btn btn-ghost btn-sm" onClick={clearLogs}>
+            Clear log
           </button>
         )}
       </div>

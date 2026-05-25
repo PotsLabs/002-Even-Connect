@@ -22,7 +22,7 @@ function parseLine(raw) {
   }
 }
 
-export default function Terminal({ lines, active }) {
+export default function Terminal({ lines, active, title = 'EvenConnect — Activity Log' }) {
   const bottomRef = useRef(null)
 
   useEffect(() => {
@@ -35,16 +35,19 @@ export default function Terminal({ lines, active }) {
         <span className="terminal-traffic" style={{ background: '#ef4444' }} />
         <span className="terminal-traffic" style={{ background: '#f59e0b' }} />
         <span className="terminal-traffic" style={{ background: '#22c55e' }} />
-        <span className="terminal-title">EvenConnect — BLE Scanner</span>
+        <span className="terminal-title">{title}</span>
         {active && <span className="terminal-badge">scanning</span>}
       </div>
       <div className="terminal-body">
         {lines.length === 0 && !active && (
           <span className="term-placeholder">
-            Terminal output will appear here during scan…
+            Activity log — errors and events from all tabs appear here.
           </span>
         )}
         {lines.map((raw, i) => {
+          if (raw === '---') {
+            return <div key={i} className="term-separator" />
+          }
           const { level, logger, message } = parseLine(raw)
           const levelColor = (level && LEVEL_COLOR[level]) || '#d1d5db'
           return (
