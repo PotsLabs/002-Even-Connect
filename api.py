@@ -278,20 +278,31 @@ def _broadcast(line: str) -> None:
             pass
 
 
+_KNOWN_SILENT = {0x25}  # heartbeat ack — too noisy to show
+
+
 async def _glass_event_handler(glass, sender, data: bytes) -> None:
-    """Installed on each Glass after connect; routes touchpad events to the SSE stream."""
-    if not data or len(data) < 2:
+    """Log every inbound BLE notification so we can observe what the firmware actually sends."""
+    if not data:
         return
     cmd = data[0]
-    if cmd == 0xF5:
+
+    # Skip known high-frequency noise
+    if cmd in _KNOWN_SILENT:
+        return
+
+    # Named interpretation if we recognise it
+    if cmd == 0xF5 and len(data) >= 2:
         code = data[1]
-        label = _INTERACTION_LABELS.get(code, f"0x{code:02x}")
-        _broadcast(f"INFO:touchpad:{glass.side} — {label}")
+        label = _INTERACTION_LABELS.get(code, f"unknown sub 0x{code:02x}")
+        _broadcast(f"INFO:touchpad:{glass.side} — {label}  raw={data.hex()}")
     elif cmd == 0x27 and len(data) >= 2:
-        # GLASSES_WEAR command (separate from 0xF5)
         status_byte = data[1]
         label = "Worn" if status_byte == 0x01 else "Taken Off"
-        _broadcast(f"INFO:wear:{glass.side} — {label}")
+        _broadcast(f"INFO:wear:{glass.side} — {label}  raw={data.hex()}")
+    else:
+        # Unknown — show raw bytes so we can map new events
+        _broadcast(f"DEBUG:ble:{glass.side} cmd=0x{cmd:02x}  raw={data.hex()}")
 
 
 def _install_event_handlers(mgr) -> None:
