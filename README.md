@@ -6,10 +6,8 @@
 
 ### Image Queueing
 Manual Cycle of list of image (page cycle gui)
-<img width="1080" height="746" alt="Screenshot 2026-05-26 at 20 51 03 (2)" src="https://github.com/user-attachments/assets/a2242257-885a-4ea4-84e8-54bcd4f505bf" />
 <img width="1512" height="982" alt="Screenshot 2026-05-26 at 20 51 03" src="https://github.com/user-attachments/assets/0322c869-a682-4ade-867e-f55027198d75" />
 
 ### Glasses Connection Terminal
 Glasses BLE and connection error reports
-<img width="1080" height="746" alt="Screenshot 2026-05-26 at 20 52 36 (2)" src="https://github.com/user-attachments/assets/14f27a44-5ac0-431f-b654-43111e57f74a" />
 <img width="1512" height="982" alt="Screenshot 2026-05-26 at 20 52 36" src="https://github.com/user-attachments/assets/d1825376-ca12-4632-9aca-fb5a5ebf8a2b" />
