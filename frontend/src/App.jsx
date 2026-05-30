@@ -1,16 +1,16 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import './App.css'
 import { api } from './api'
-import ComposeTab from './components/ComposeTab'
 import Home from './components/Home'
 import ImageTab from './components/ImageTab'
-import TextTab from './components/TextTab'
+import ObsidianTab from './components/ObsidianTab'
+import SendTab from './components/SendTab'
 
 const TABS = [
-  { id: 'home',    label: 'Home',    icon: <IconHome /> },
-  { id: 'image',   label: 'Image',   icon: <IconImage /> },
-  { id: 'compose', label: 'Compose', icon: <IconCompose /> },
-  { id: 'text',    label: 'Text',    icon: <IconText /> },
+  { id: 'home',     label: 'Home',     icon: <IconHome /> },
+  { id: 'image',    label: 'Image',    icon: <IconImage /> },
+  { id: 'send',     label: 'Send',     icon: <IconSend /> },
+  { id: 'obsidian', label: 'Obsidian', icon: <IconObsidian /> },
 ]
 
 export default function App() {
@@ -19,6 +19,8 @@ export default function App() {
   const [toasts, setToasts] = useState([])
   const [logs, setLogs] = useState([])
   const toastIdRef = useRef(0)
+  // Lazy-mount: track which tabs have been visited so their state survives tab switches
+  const [visited, setVisited] = useState(() => new Set(['home']))
 
   // Poll connection status every 4 s
   useEffect(() => {
@@ -65,7 +67,7 @@ export default function App() {
             <button
               key={t.id}
               className={`nav-btn ${tab === t.id ? 'active' : ''}`}
-              onClick={() => setTab(t.id)}
+              onClick={() => { setTab(t.id); setVisited(v => new Set([...v, t.id])) }}
             >
               {t.icon}
               {t.label}
@@ -79,10 +81,21 @@ export default function App() {
 
       {/* Main */}
       <main className="main">
-        {tab === 'home'    && <Home       {...sharedProps} onStatusChange={setStatus} logs={logs} clearLogs={clearLogs} />}
-        {tab === 'image'   && <ImageTab   {...sharedProps} />}
-        {tab === 'compose' && <ComposeTab {...sharedProps} />}
-        {tab === 'text'    && <TextTab    {...sharedProps} />}
+        {tab === 'home' && <Home {...sharedProps} onStatusChange={setStatus} logs={logs} clearLogs={clearLogs} />}
+
+        {/* Image tab: lazy-mount then keep alive so queue state survives tab switches */}
+        {visited.has('image') && (
+          <div style={{ display: tab === 'image' ? 'contents' : 'none' }}>
+            <ImageTab {...sharedProps} />
+          </div>
+        )}
+
+        {visited.has('send') && (
+          <div style={{ display: tab === 'send' ? 'contents' : 'none' }}>
+            <SendTab {...sharedProps} />
+          </div>
+        )}
+        {tab === 'obsidian' && <ObsidianTab {...sharedProps} />}
       </main>
 
       {/* Toast notifications */}
@@ -114,24 +127,21 @@ function IconImage() {
   )
 }
 
-function IconCompose() {
+function IconSend() {
   return (
     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-      <rect x="3" y="3" width="18" height="18" rx="2" />
-      <line x1="8" y1="12" x2="16" y2="12" />
-      <line x1="8" y1="8" x2="13" y2="8" />
-      <line x1="8" y1="16" x2="14" y2="16" />
+      <line x1="22" y1="2" x2="11" y2="13" />
+      <polygon points="22 2 15 22 11 13 2 9 22 2" />
     </svg>
   )
 }
 
-function IconText() {
+function IconObsidian() {
   return (
     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-      <line x1="17" y1="10" x2="3" y2="10" />
-      <line x1="21" y1="6" x2="3" y2="6" />
-      <line x1="21" y1="14" x2="3" y2="14" />
-      <line x1="17" y1="18" x2="3" y2="18" />
+      <path d="M12 2L4 7v10l8 5 8-5V7z" />
+      <path d="M12 2v20" />
+      <path d="M4 7l8 5 8-5" />
     </svg>
   )
 }

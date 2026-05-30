@@ -26,8 +26,23 @@ export const api = {
   sendPrecomputed:  (id)      => request(`/send-precomputed/${id}`, { method: 'POST' }),
   deletePrecomputed:(id)      => request(`/queue/precomputed/${id}`, { method: 'DELETE' }),
 
-  // Compose (background + text layers)
-  previewCompose:     (backgroundData, blocks) => request('/preview-compose',    { method: 'POST', body: JSON.stringify({ backgroundData, blocks }) }),
-  sendCompose:        (backgroundData, blocks) => request('/send-compose',       { method: 'POST', body: JSON.stringify({ backgroundData, blocks }) }),
-  precomputeCompose:  (backgroundData, blocks) => request('/precompute-compose', { method: 'POST', body: JSON.stringify({ backgroundData, blocks }) }),
+  // Compose (background + image layers + text layers)
+  previewCompose:       (backgroundData, blocks, imageLayers = [])                          => request('/preview-compose',        { method: 'POST', body: JSON.stringify({ backgroundData, blocks, imageLayers }) }),
+  sendCompose:          (backgroundData, blocks, imageLayers = [])                          => request('/send-compose',           { method: 'POST', body: JSON.stringify({ backgroundData, blocks, imageLayers }) }),
+  precomputeCompose:    (backgroundData, blocks, imageLayers = [])                          => request('/precompute-compose',     { method: 'POST', body: JSON.stringify({ backgroundData, blocks, imageLayers }) }),
+  previewStereoCompose: (backgroundData, backgroundZ = 0, blocks, imageLayers = [], maxDisparity = 10) => request('/preview-stereo-compose', { method: 'POST', body: JSON.stringify({ backgroundData, backgroundZ, blocks, imageLayers, maxDisparity }) }),
+  sendStereoCompose:    (backgroundData, backgroundZ = 0, blocks, imageLayers = [], maxDisparity = 10) => request('/send-stereo-compose',    { method: 'POST', body: JSON.stringify({ backgroundData, backgroundZ, blocks, imageLayers, maxDisparity }) }),
+
+  // Obsidian Local REST API proxy
+  obsidian: {
+    getConfig:    ()                     => request('/obsidian/config'),
+    setConfig:    (url, api_key)         => request('/obsidian/config',           { method: 'POST', body: JSON.stringify({ url, api_key }) }),
+    ping:         ()                     => request('/obsidian/ping'),
+    listFiles:    ()                     => request('/obsidian/files'),
+    getFile:      (path)                 => request(`/obsidian/file/${path}`),
+    writeFile:    (path, content)        => request(`/obsidian/file/${path}`,     { method: 'PUT',    body: JSON.stringify({ content }) }),
+    appendFile:   (path, content)        => request(`/obsidian/file/${path}/append`, { method: 'POST', body: JSON.stringify({ content }) }),
+    deleteFile:   (path)                 => request(`/obsidian/file/${path}`,     { method: 'DELETE' }),
+    search:       (query)                => request('/obsidian/search',           { method: 'POST', body: JSON.stringify({ query }) }),
+  },
 }

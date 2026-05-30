@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { api } from '../api'
 
-const DEFAULT_STEREO = { maxDisparity: 6, blurRadius: 3, invertDepth: false }
+const DEFAULT_STEREO = { maxDisparity: 10, blurRadius: 3, invertDepth: false }
 
 export default function ImageTab({ status, addToast, addLog }) {
   const [original, setOriginal]       = useState(null)
