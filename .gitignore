@@ -20,6 +20,7 @@ build/
 # Frontend build artefacts and deps
 frontend/node_modules/
 frontend/dist/
+g1-sample/
 
 # macOS
 .DS_Store

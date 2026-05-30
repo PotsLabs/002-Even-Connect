@@ -8,6 +8,8 @@ import os
 import zlib
 from datetime import datetime
 
+import httpx
+
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "even_glasses"))
 
 from fastapi import FastAPI, HTTPException
@@ -105,8 +107,11 @@ def _get_font(size: int) -> ImageFont.FreeTypeFont:
     return font
 
 
-def _compose_bmp(background_b64: str, blocks: list) -> bytes:
-    """Composite a background image + text layers into a 576×136 ready-to-transmit BMP."""
+def _compose_bmp(background_b64: str, blocks: list, image_layers: list = []) -> bytes:
+    """Composite background + image layers + text layers into a 576×136 ready-to-transmit BMP.
+
+    Render order (back to front): background → image layers (in list order) → text blocks.
+    """
     if background_b64:
         img = Image.open(io.BytesIO(base64.b64decode(background_b64))).convert("L")
         img.thumbnail((_IMG_W, _IMG_H), Image.LANCZOS)
@@ -115,30 +120,12 @@ def _compose_bmp(background_b64: str, blocks: list) -> bytes:
     else:
         canvas = Image.new("L", (_IMG_W, _IMG_H), 0)
 
+    for layer in image_layers:
+        _render_image_layer(canvas, layer)
+
     draw = ImageDraw.Draw(canvas)
-
     for block in blocks:
-        text = block.text.strip()
-        if not text:
-            continue
-        font = _get_font(block.size)
-        fill = 255 if block.color == "light" else 0
-
-        bbox = draw.multiline_textbbox((0, 0), text, font=font, spacing=2)
-        tw, th = bbox[2] - bbox[0], bbox[3] - bbox[1]
-
-        v, _, h = block.position.partition("-")
-        pad = block.padding
-
-        if h == "left":    x = pad
-        elif h == "center": x = max(0, (_IMG_W - tw) // 2)
-        else:              x = max(0, _IMG_W - tw - pad)
-
-        if v == "top":     y = pad
-        elif v == "middle": y = max(0, (_IMG_H - th) // 2)
-        else:              y = max(0, _IMG_H - th - pad)
-
-        draw.multiline_text((x, y), text, font=font, fill=fill, spacing=2)
+        _render_block(draw, block)
 
     bmp_img = canvas.point(lambda p: 0 if p > 64 else 255).convert("1")
     buf = io.BytesIO()
@@ -211,7 +198,7 @@ def _to_stereo_bmp_pair(
     return _finalize(left_arr), _finalize(right_arr)
 
 
-_TEXT_SHOW = 0x71  # 0x70 (Text Show) | 0x01 (New Content)
+_TEXT_MANUAL = 0x31  # 0x30 (AI Displaying) | 0x01 (New Content) — used by official app for tap-to-advance
 
 # Weekday mapping: Python's weekday() is 0=Mon…6=Sun; glasses expect 0=Sun…6=Sat
 _PY_TO_GLASS_WEEKDAY = [1, 2, 3, 4, 5, 6, 0]
@@ -248,8 +235,8 @@ async def _sync_time(manager) -> None:
 # ── Touchpad / state event broadcast ──────────────────────────────────────
 # All 0xF5 subcommand codes the glasses can send.
 _INTERACTION_LABELS: dict[int, str] = {
-    0x00: "Double Tap",
-    0x01: "Single Tap",
+    0x00: "Display Ready",           # user exited / display done
+    0x01: "Change Page",             # single tap — advance page in manual mode
     0x02: "Dashboard Open",
     0x03: "Dashboard Close",
     0x04: "Silent Mode On",
@@ -260,11 +247,15 @@ _INTERACTION_LABELS: dict[int, str] = {
     0x09: "Cradle Charged",
     0x0B: "Cradle Closed",
     0x11: "Device Connected",
-    0x17: "Long Press",
-    0x18: "Long Press Released",
+    0x17: "Trigger AI",              # long press
+    0x18: "Stop Recording",          # long press released
     0x1E: "Dashboard Confirmed Open",
     0x1F: "Dashboard Confirmed Close",
 }
+
+# Active manual-paged text session.
+_text_session: dict = {"pages": [], "current": 0, "total": 0}
+_text_session_last_advance: float = 0.0  # debounce duplicate events from both glasses
 
 # One asyncio.Queue per active SSE subscriber — broadcasts to all open tabs.
 _event_subscribers: list[asyncio.Queue] = []
@@ -281,27 +272,76 @@ def _broadcast(line: str) -> None:
 _KNOWN_SILENT = {0x25}  # heartbeat ack — too noisy to show
 
 
+async def _send_page(mgr, text: str, page_number: int, max_pages: int) -> None:
+    """Dual-packet send matching the official Swift SDK approach.
+
+    Packet 1 — [0x4E, 0x71, len, ...text]: direct display render, no AI overlay.
+    Packet 2 — send_text_packet(..., 0x31): pagination state so firmware forwards taps.
+    """
+    text_bytes = text.encode("utf-8")
+    display_pkt = bytes([0x4E, 0x71, len(text_bytes) & 0xFF]) + text_bytes
+    if mgr.left_glass and mgr.left_glass.client.is_connected:
+        await mgr.left_glass.send(display_pkt)
+    await asyncio.sleep(0.05)
+    if mgr.right_glass and mgr.right_glass.client.is_connected:
+        await mgr.right_glass.send(display_pkt)
+    await asyncio.sleep(0.05)
+    await send_text_packet(
+        manager=mgr,
+        text_message=text,
+        page_number=page_number,
+        max_pages=max_pages,
+        screen_status=_TEXT_MANUAL,
+    )
+
+
+async def _step_text_page(forward: bool) -> None:
+    """Advance or rewind the active manual text session by one page."""
+    global _text_session, _text_session_last_advance
+    import time as _time
+
+    now = _time.monotonic()
+    if now - _text_session_last_advance < 0.5:
+        return
+    _text_session_last_advance = now
+
+    pages = _text_session["pages"]
+    if not pages:
+        return
+
+    next_idx = _text_session["current"] + (1 if forward else -1)
+    next_idx = max(0, min(next_idx, _text_session["total"] - 1))
+    if next_idx == _text_session["current"]:
+        return
+
+    _text_session["current"] = next_idx
+    await _send_page(manager, pages[next_idx], next_idx + 1, _text_session["total"])
+    _broadcast(f"INFO:text:page {next_idx + 1}/{_text_session['total']}")
+
+
 async def _glass_event_handler(glass, sender, data: bytes) -> None:
     """Log every inbound BLE notification so we can observe what the firmware actually sends."""
     if not data:
         return
     cmd = data[0]
 
-    # Skip known high-frequency noise
     if cmd in _KNOWN_SILENT:
         return
 
-    # Named interpretation if we recognise it
     if cmd == 0xF5 and len(data) >= 2:
         code = data[1]
         label = _INTERACTION_LABELS.get(code, f"unknown sub 0x{code:02x}")
         _broadcast(f"INFO:touchpad:{glass.side} — {label}  raw={data.hex()}")
+
+        if code == 0x01:  # Change Page — right=forward, left=backward
+            await _step_text_page(forward=(glass.side == "right"))
+        elif code == 0x00:  # Display Ready — user exited
+            _text_session.update({"pages": [], "current": 0, "total": 0})
     elif cmd == 0x27 and len(data) >= 2:
         status_byte = data[1]
         label = "Worn" if status_byte == 0x01 else "Taken Off"
         _broadcast(f"INFO:wear:{glass.side} — {label}  raw={data.hex()}")
     else:
-        # Unknown — show raw bytes so we can map new events
         _broadcast(f"DEBUG:ble:{glass.side} cmd=0x{cmd:02x}  raw={data.hex()}")
 
 
@@ -313,27 +353,25 @@ def _install_event_handlers(mgr) -> None:
         mgr.right_glass.notification_handler = _glass_event_handler
 
 
-async def _send_text(manager, text_message: str, duration: float = 5) -> None:
-    """Send text using the correct 0x70 Text Show status, not the EvenAI 0x30 status."""
+async def _send_text(manager, text_message: str) -> None:
+    """Send text in manual-page mode. Right tap = forward, left tap = backward."""
+    global _text_session
+
     lines = format_text_lines(text_message)
     total_pages = max(1, (len(lines) + 4) // 5)
 
-    for pn, page_start in enumerate(range(0, len(lines), 5), start=1):
+    pages = []
+    for page_start in range(0, len(lines), 5):
         page_lines = lines[page_start : page_start + 5]
         if len(page_lines) < 5:
             padding = (5 - len(page_lines)) // 2
             page_lines = (
                 [""] * padding + page_lines + [""] * (5 - len(page_lines) - padding)
             )
-        await send_text_packet(
-            manager=manager,
-            text_message="\n".join(page_lines),
-            page_number=pn,
-            max_pages=total_pages,
-            screen_status=_TEXT_SHOW,
-        )
-        if pn != total_pages:
-            await asyncio.sleep(duration)
+        pages.append("\n".join(page_lines))
+
+    _text_session = {"pages": pages, "current": 0, "total": total_pages}
+    await _send_page(manager, pages[0], 1, total_pages)
 
 
 async def _glass_request(glass, cmd: bytes, resp_byte_idx: int, timeout: float = 3.0) -> bool:
@@ -562,6 +600,36 @@ async def send_text_endpoint(payload: TextPayload):
     return {"success": True}
 
 
+_SAMPLE_TEXT = """\
+Morning Brief
+---------------------
+Good morning. Here is
+your daily overview.
+Tap right to continue.
+
+Tasks -- Today
+---------------------
+[ ] Review open PRs
+[ ] Team standup 10am
+[ ] Ship BLE fix
+
+Quick Note
+---------------------
+KiroshiOS: manual
+pagination via tap
+is now working!\
+"""
+
+
+@app.post("/api/debug/send-sample")
+async def send_sample():
+    status = _connection_status()
+    if not status["connected"]:
+        raise HTTPException(status_code=503, detail="Glasses not connected")
+    await _send_text(manager, _SAMPLE_TEXT)
+    return {"success": True, "pages": _text_session["total"]}
+
+
 class ImagePayload(BaseModel):
     imageData: str  # base64-encoded image (any format)
 
@@ -686,13 +754,27 @@ async def delete_precomputed(image_id: str):
 class TextBlock(BaseModel):
     text:     str
     position: str = "bottom-left"
-    size:     int = 18
-    color:    str = "light"   # "light" → fill=255 in canvas; "dark" → fill=0
-    padding:  int = 6
+    size:     int = 14
+    color:    str = "light"
+    padding:  int = 14
+    z:        int = 0
+
+class ImageLayer(BaseModel):
+    imageData: str          # base64, no data-URL prefix
+    position:  str = "middle-center"
+    z:         int = 1
 
 class ComposePayload(BaseModel):
     backgroundData: str = ""
-    blocks: list[TextBlock]
+    blocks:         list[TextBlock]  = []
+    imageLayers:    list[ImageLayer] = []
+
+class StereoComposePayload(BaseModel):
+    backgroundData: str = ""
+    backgroundZ:    int = 0
+    blocks:         list[TextBlock]  = []
+    imageLayers:    list[ImageLayer] = []
+    maxDisparity:   int = 10
 
 
 def _bmp_to_preview_png(bmp_data: bytes) -> str:
@@ -702,11 +784,125 @@ def _bmp_to_preview_png(bmp_data: bytes) -> str:
     return "data:image/png;base64," + base64.b64encode(buf.getvalue()).decode()
 
 
+def _render_image_layer(canvas: Image.Image, layer, x_offset: int = 0) -> None:
+    """OR-composite an ImageLayer onto canvas with an optional horizontal parallax shift."""
+    img = Image.open(io.BytesIO(base64.b64decode(layer.imageData))).convert("L")
+
+    if layer.position == "fill":
+        img = img.resize((_IMG_W, _IMG_H), Image.LANCZOS)
+        x, y = x_offset, 0
+    else:
+        img.thumbnail((_IMG_W, _IMG_H), Image.LANCZOS)
+        iw, ih = img.size
+        v, _, h_align = layer.position.partition("-")
+        x = {"left": 0, "center": (_IMG_W - iw) // 2, "right": _IMG_W - iw}.get(h_align, (_IMG_W - iw) // 2)
+        y = {"top": 0, "middle": (_IMG_H - ih) // 2, "bottom": _IMG_H - ih}.get(v, (_IMG_H - ih) // 2)
+        x += x_offset
+
+    buf = Image.new("L", (_IMG_W, _IMG_H), 0)
+    buf.paste(img, (x, y))
+    blended = np.maximum(np.array(canvas, dtype=np.uint8), np.array(buf, dtype=np.uint8))
+    canvas.paste(Image.fromarray(blended))
+
+
+def _render_block(draw: "ImageDraw.ImageDraw", block, x_offset: int = 0) -> None:
+    """Draw a single TextBlock onto an existing ImageDraw canvas with optional x shift."""
+    text = block.text.strip()
+    if not text:
+        return
+    font = _get_font(block.size)
+    fill = 255 if block.color == "light" else 0
+    bbox = draw.multiline_textbbox((0, 0), text, font=font, spacing=2)
+    tw, th = bbox[2] - bbox[0], bbox[3] - bbox[1]
+    v, _, h = block.position.partition("-")
+    pad = block.padding
+    if h == "left":    x = pad
+    elif h == "center": x = max(0, (_IMG_W - tw) // 2)
+    else:              x = max(0, _IMG_W - tw - pad)
+    if v == "top":     y = pad
+    elif v == "middle": y = max(0, (_IMG_H - th) // 2)
+    else:              y = max(0, _IMG_H - th - pad)
+    draw.multiline_text((x + x_offset, y), text, font=font, fill=fill, spacing=2)
+
+
+def _shift_canvas(canvas: Image.Image, x_offset: int) -> Image.Image:
+    """Translate canvas content horizontally, filling the exposed edge with black.
+
+    x_offset > 0 → content moves right (black appears on left edge).
+    x_offset < 0 → content moves left  (black appears on right edge).
+    """
+    if x_offset == 0:
+        return canvas.copy()
+    result = Image.new("L", (_IMG_W, _IMG_H), 0)
+    if x_offset > 0:
+        crop_w = max(0, _IMG_W - x_offset)
+        result.paste(canvas.crop((0, 0, crop_w, _IMG_H)), (x_offset, 0))
+    else:
+        abs_off = -x_offset
+        crop_w  = max(0, _IMG_W - abs_off)
+        result.paste(canvas.crop((abs_off, 0, _IMG_W, _IMG_H)), (0, 0))
+    return result
+
+
+def _compose_stereo_bmp_pair(
+    background_b64: str,
+    blocks: list,
+    max_disparity: int = 10,
+    background_z:  int = 0,
+    image_layers:  list = [],
+) -> tuple[bytes, bytes]:
+    """Compose a stereo BMP pair with independent z-depth for background and each text layer.
+
+    z=0  → no parallax (appears at screen plane).
+    z>0  → shifts outward (closer to the viewer).
+    z<0  → shifts inward (further from the viewer / behind screen).
+
+    Pixel shift = z / 5 × max_disparity.  Range: z ∈ [-5, +5].
+    Left eye gets −shift, right eye gets +shift (parallel-view convention).
+    """
+    if background_b64:
+        img = Image.open(io.BytesIO(base64.b64decode(background_b64))).convert("L")
+        img.thumbnail((_IMG_W, _IMG_H), Image.LANCZOS)
+        canvas = Image.new("L", (_IMG_W, _IMG_H), 0)
+        canvas.paste(img, ((_IMG_W - img.width) // 2, (_IMG_H - img.height) // 2))
+    else:
+        canvas = Image.new("L", (_IMG_W, _IMG_H), 0)
+
+    def z_to_shift(z: int) -> int:
+        return int(round(z / 5 * max_disparity))
+
+    bg_shift = z_to_shift(background_z)
+    left_canvas  = _shift_canvas(canvas, -bg_shift)
+    right_canvas = _shift_canvas(canvas, +bg_shift)
+
+    # Image layers — each shifted by its own z
+    for layer in image_layers:
+        s = z_to_shift(layer.z)
+        _render_image_layer(left_canvas,  layer, x_offset=-s)
+        _render_image_layer(right_canvas, layer, x_offset=+s)
+
+    draw_left  = ImageDraw.Draw(left_canvas)
+    draw_right = ImageDraw.Draw(right_canvas)
+
+    for block in blocks:
+        s = z_to_shift(block.z)
+        _render_block(draw_left,  block, x_offset=-s)
+        _render_block(draw_right, block, x_offset=+s)
+
+    def _finalize(c: Image.Image) -> bytes:
+        bmp = c.point(lambda p: 0 if p > 64 else 255).convert("1")
+        buf = io.BytesIO()
+        bmp.save(buf, format="BMP")
+        return buf.getvalue()
+
+    return _finalize(left_canvas), _finalize(right_canvas)
+
+
 @app.post("/api/preview-compose")
 async def preview_compose(payload: ComposePayload):
     try:
         loop = asyncio.get_running_loop()
-        bmp = await loop.run_in_executor(None, _compose_bmp, payload.backgroundData, payload.blocks)
+        bmp = await loop.run_in_executor(None, _compose_bmp, payload.backgroundData, payload.blocks, payload.imageLayers)
         return {"preview": _bmp_to_preview_png(bmp)}
     except Exception as e:
         raise HTTPException(status_code=400, detail=f"Compose failed: {e}")
@@ -723,7 +919,7 @@ async def send_compose(payload: ComposePayload):
         raise HTTPException(status_code=503, detail="Both glasses must be connected")
     try:
         loop = asyncio.get_running_loop()
-        bmp = await loop.run_in_executor(None, _compose_bmp, payload.backgroundData, payload.blocks)
+        bmp = await loop.run_in_executor(None, _compose_bmp, payload.backgroundData, payload.blocks, payload.imageLayers)
     except Exception as e:
         raise HTTPException(status_code=400, detail=f"Compose failed: {e}")
     result = await _transmit_image(left_glass, right_glass, bmp)
@@ -739,7 +935,7 @@ async def precompute_compose(payload: ComposePayload):
     import uuid as _uuid
     try:
         loop = asyncio.get_running_loop()
-        bmp = await loop.run_in_executor(None, _compose_bmp, payload.backgroundData, payload.blocks)
+        bmp = await loop.run_in_executor(None, _compose_bmp, payload.backgroundData, payload.blocks, payload.imageLayers)
     except Exception as e:
         raise HTTPException(status_code=400, detail=f"Compose failed: {e}")
     image_id = str(_uuid.uuid4())
@@ -749,6 +945,47 @@ async def precompute_compose(payload: ComposePayload):
         "crc":    _crc_command(bmp),
     }
     return {"id": image_id, "preview": _bmp_to_preview_png(bmp)}
+
+
+@app.post("/api/preview-stereo-compose")
+async def preview_stereo_compose(payload: StereoComposePayload):
+    try:
+        loop = asyncio.get_running_loop()
+        left_bmp, right_bmp = await loop.run_in_executor(
+            None, _compose_stereo_bmp_pair,
+            payload.backgroundData, payload.blocks, payload.maxDisparity, payload.backgroundZ, payload.imageLayers,
+        )
+        return {"left": _bmp_to_preview_png(left_bmp), "right": _bmp_to_preview_png(right_bmp)}
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Stereo compose failed: {e}")
+
+
+@app.post("/api/send-stereo-compose")
+async def send_stereo_compose(payload: StereoComposePayload):
+    status = _connection_status()
+    if not status["connected"]:
+        raise HTTPException(status_code=503, detail="Glasses not connected")
+    left_glass  = manager.left_glass
+    right_glass = manager.right_glass
+    if not left_glass or not right_glass:
+        raise HTTPException(status_code=503, detail="Both glasses must be connected")
+    try:
+        loop = asyncio.get_running_loop()
+        left_bmp, right_bmp = await loop.run_in_executor(
+            None, _compose_stereo_bmp_pair,
+            payload.backgroundData, payload.blocks, payload.maxDisparity, payload.backgroundZ, payload.imageLayers,
+        )
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Stereo compose failed: {e}")
+    end_cmd = bytes([0x20, 0x0D, 0x0E])
+    left_ok, right_ok = await asyncio.gather(
+        _send_image_to_glass(left_glass,  _build_image_frames(left_bmp),  end_cmd, _crc_command(left_bmp)),
+        _send_image_to_glass(right_glass, _build_image_frames(right_bmp), end_cmd, _crc_command(right_bmp)),
+    )
+    if not (left_ok and right_ok):
+        failed = (["left"] if not left_ok else []) + (["right"] if not right_ok else [])
+        raise HTTPException(status_code=502, detail=f"Stereo compose transfer failed on: {', '.join(failed)}")
+    return {"success": True}
 
 
 @app.post("/api/preview-bmp")
@@ -768,7 +1005,7 @@ async def preview_bmp(payload: ImagePayload):
 
 class StereoImagePayload(BaseModel):
     imageData: str
-    maxDisparity: int   = 6    # max horizontal pixel shift; 4–10 is comfortable for most displays
+    maxDisparity: int   = 10   # max horizontal pixel shift
     blurRadius:   float = 3.0  # depth map Gaussian blur radius; higher = smoother transitions, more bleed
     invertDepth:  bool  = False # flip depth map; use for dark-on-light content (e.g. point clouds)
 
@@ -827,6 +1064,181 @@ async def preview_stereo_bmp(payload: StereoImagePayload):
         return "data:image/png;base64," + base64.b64encode(buf.getvalue()).decode()
 
     return {"left": _to_preview_png(left_bmp), "right": _to_preview_png(right_bmp)}
+
+
+# ── Obsidian Local REST API proxy ─────────────────────────────────────────
+# Requires the "Local REST API" community plugin in Obsidian.
+# Default HTTPS port: 27124  |  HTTP port: 27123
+# Plugin settings → copy the API key here.
+
+_obsidian_cfg: dict = {
+    "url": "https://127.0.0.1:27124",
+    "api_key": "",
+}
+
+
+def _obs_headers() -> dict:
+    h = {}
+    if _obsidian_cfg["api_key"]:
+        h["Authorization"] = _obsidian_cfg["api_key"]
+    return h
+
+
+async def _obs(method: str, path: str, **kwargs) -> httpx.Response:
+    """Make an async request to the Obsidian Local REST API."""
+    base = _obsidian_cfg["url"].rstrip("/")
+    async with httpx.AsyncClient(verify=False) as client:
+        return await client.request(
+            method, f"{base}{path}", headers=_obs_headers(), timeout=10.0, **kwargs
+        )
+
+
+class ObsidianConfigPayload(BaseModel):
+    url: str = "https://127.0.0.1:27124"
+    api_key: str = ""
+
+
+class ObsidianWritePayload(BaseModel):
+    content: str
+
+
+class ObsidianSearchPayload(BaseModel):
+    query: str
+
+
+@app.get("/api/obsidian/config")
+async def obsidian_get_config():
+    key = _obsidian_cfg["api_key"]
+    return {
+        "url": _obsidian_cfg["url"],
+        "api_key_set": bool(key),
+        "api_key_preview": f"{key[:4]}…" if len(key) > 4 else ("set" if key else ""),
+    }
+
+
+@app.post("/api/obsidian/config")
+async def obsidian_set_config(payload: ObsidianConfigPayload):
+    _obsidian_cfg["url"] = payload.url.rstrip("/")
+    _obsidian_cfg["api_key"] = payload.api_key.encode("ascii", errors="ignore").decode("ascii").strip()
+    return {"ok": True}
+
+
+@app.get("/api/obsidian/ping")
+async def obsidian_ping():
+    try:
+        r = await _obs("GET", "/")
+        return {"ok": r.status_code < 400, "status": r.status_code, "body": r.json()}
+    except httpx.ConnectError:
+        raise HTTPException(status_code=503, detail="Cannot reach Obsidian — is the app open and the Local REST API plugin enabled?")
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=str(e))
+
+
+@app.get("/api/obsidian/files")
+async def obsidian_list_files():
+    try:
+        r = await _obs("GET", "/vault/")
+        if r.status_code == 401:
+            raise HTTPException(status_code=401, detail="Invalid API key")
+        return r.json()
+    except HTTPException:
+        raise
+    except httpx.ConnectError:
+        raise HTTPException(status_code=503, detail="Cannot reach Obsidian")
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=str(e))
+
+
+@app.get("/api/obsidian/file/{path:path}")
+async def obsidian_get_file(path: str):
+    try:
+        r = await _obs("GET", f"/vault/{path}")
+        if r.status_code == 404:
+            raise HTTPException(status_code=404, detail="File not found")
+        if r.status_code == 401:
+            raise HTTPException(status_code=401, detail="Invalid API key")
+        return {"path": path, "content": r.text}
+    except HTTPException:
+        raise
+    except httpx.ConnectError:
+        raise HTTPException(status_code=503, detail="Cannot reach Obsidian")
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=str(e))
+
+
+@app.put("/api/obsidian/file/{path:path}")
+async def obsidian_write_file(path: str, payload: ObsidianWritePayload):
+    """Create or overwrite a note."""
+    try:
+        r = await _obs(
+            "PUT", f"/vault/{path}",
+            content=payload.content.encode(),
+            headers={**_obs_headers(), "Content-Type": "text/markdown"},
+        )
+        if r.status_code == 401:
+            raise HTTPException(status_code=401, detail="Invalid API key")
+        return {"ok": True, "status": r.status_code}
+    except HTTPException:
+        raise
+    except httpx.ConnectError:
+        raise HTTPException(status_code=503, detail="Cannot reach Obsidian")
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=str(e))
+
+
+@app.post("/api/obsidian/file/{path:path}/append")
+async def obsidian_append_file(path: str, payload: ObsidianWritePayload):
+    """Append text to an existing note."""
+    try:
+        r = await _obs(
+            "POST", f"/vault/{path}",
+            content=payload.content.encode(),
+            headers={**_obs_headers(), "Content-Type": "text/markdown"},
+        )
+        if r.status_code == 401:
+            raise HTTPException(status_code=401, detail="Invalid API key")
+        return {"ok": True, "status": r.status_code}
+    except HTTPException:
+        raise
+    except httpx.ConnectError:
+        raise HTTPException(status_code=503, detail="Cannot reach Obsidian")
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=str(e))
+
+
+@app.delete("/api/obsidian/file/{path:path}")
+async def obsidian_delete_file(path: str):
+    try:
+        r = await _obs("DELETE", f"/vault/{path}")
+        if r.status_code == 404:
+            raise HTTPException(status_code=404, detail="File not found")
+        if r.status_code == 401:
+            raise HTTPException(status_code=401, detail="Invalid API key")
+        return {"ok": True}
+    except HTTPException:
+        raise
+    except httpx.ConnectError:
+        raise HTTPException(status_code=503, detail="Cannot reach Obsidian")
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=str(e))
+
+
+@app.post("/api/obsidian/search")
+async def obsidian_search(payload: ObsidianSearchPayload):
+    try:
+        r = await _obs(
+            "POST", f"/search/simple/",
+            params={"query": payload.query},
+        )
+        if r.status_code == 401:
+            raise HTTPException(status_code=401, detail="Invalid API key")
+        return r.json()
+    except HTTPException:
+        raise
+    except httpx.ConnectError:
+        raise HTTPException(status_code=503, detail="Cannot reach Obsidian")
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=str(e))
 
 
 # Serve React build if it exists
