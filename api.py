@@ -23,6 +23,18 @@ from PIL import Image, ImageDraw, ImageFilter, ImageFont, ImageOps
 from even_glasses.bluetooth_manager import GlassesManager
 from even_glasses.commands import format_text_lines, send_text_packet
 
+# ── bleak 3.x compatibility shim ───────────────────────────────────────────
+# even_glasses 0.1.11 calls the removed BleakClient.get_services() during
+# connect(). In bleak ≥0.18 / 3.x, services are populated automatically on
+# connect() and exposed via the .services property. Re-add get_services() as an
+# async no-op so the stale SDK connects cleanly regardless of which venv runs.
+from bleak import BleakClient as _BleakClient
+
+if not hasattr(_BleakClient, "get_services"):
+    async def _get_services_compat(self):
+        return self.services
+    _BleakClient.get_services = _get_services_compat
+
 # ── Image transmission (eveng1_python_sdk protocol) ────────────────────────
 _IMG_W       = 576
 _IMG_H       = 136
@@ -72,7 +84,11 @@ def _to_ready_bmp(image_bytes: bytes) -> bytes:
 _frame_cache: dict[str, dict] = {}
 
 # ── Font utilities for compose ─────────────────────────────────────────────
+_ROOT = os.path.dirname(__file__)
 _FONT_PATHS = [
+    os.path.join(_ROOT, "image_tests", "EvenSignature_Final 1.0_English Only.otf"),
+    os.path.join(_ROOT, "image_tests", "EvenRosterGrotesk_Final 1.0_English Only.otf"),
+    os.path.join(_ROOT, "image_tests", "EvenTimeBigPixel_v1.0.ttf"),
     "/System/Library/Fonts/SFNS.ttf",
     "/System/Library/Fonts/Helvetica.ttc",
     "/System/Library/Fonts/HelveticaNeue.ttc",

@@ -47,9 +47,6 @@ pub fn run() {
                 })
                 .build(app)?;
 
-            // Start the Python backend
-            spawn_backend(app.handle());
-
             Ok(())
         })
         .on_window_event(|window, event| {
@@ -82,7 +79,6 @@ fn position_under_tray(app: &AppHandle, window: &WebviewWindow) {
             let monitor = window.current_monitor().ok().flatten();
             let scale = monitor.as_ref().map(|m| m.scale_factor()).unwrap_or(1.0);
 
-            // rect.position and rect.size are enums; extract as physical pixels
             let (px, py) = match rect.position {
                 tauri::Position::Physical(p) => (p.x as f64, p.y as f64),
                 tauri::Position::Logical(p) => (p.x * scale, p.y * scale),
@@ -92,7 +88,6 @@ fn position_under_tray(app: &AppHandle, window: &WebviewWindow) {
                 tauri::Size::Logical(s) => (s.width * scale, s.height * scale),
             };
 
-            // Convert to logical coordinates
             let x = (px / scale) as i32;
             let y = (py / scale) as i32;
             let icon_w = (pw / scale) as i32;
@@ -104,49 +99,5 @@ fn position_under_tray(app: &AppHandle, window: &WebviewWindow) {
 
             let _ = window.set_position(tauri::LogicalPosition::new(new_x, new_y));
         }
-    }
-}
-
-fn spawn_backend(app: &AppHandle) {
-    use std::process::Command;
-
-    // Walk up from the app resource dir to find the project root api.py
-    let resource_dir = app
-        .path()
-        .resource_dir()
-        .unwrap_or_default();
-
-    // In dev the CWD is the project root; in release we walk up from the bundle
-    let project_root = if cfg!(debug_assertions) {
-        std::env::current_dir()
-            .unwrap_or_default()
-            .parent()
-            .unwrap_or(&std::path::Path::new("."))
-            .to_path_buf()
-    } else {
-        resource_dir
-    };
-
-    let api_path = project_root.join("api.py");
-    if !api_path.exists() {
-        log::warn!("api.py not found at {:?} — backend not started", api_path);
-        return;
-    }
-
-    // Prefer .venv, fall back to system python3
-    let venv_python = project_root.join(".venv/bin/python3");
-    let python = if venv_python.exists() {
-        venv_python
-    } else {
-        std::path::PathBuf::from("python3")
-    };
-
-    match Command::new(&python)
-        .arg(&api_path)
-        .current_dir(&project_root)
-        .spawn()
-    {
-        Ok(_) => log::info!("Python backend started"),
-        Err(e) => log::error!("Failed to start Python backend: {e}"),
     }
 }

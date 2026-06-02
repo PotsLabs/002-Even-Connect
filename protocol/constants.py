@@ -192,10 +192,14 @@ SILENT_CMDS: set[int] = {
 }
 
 
-# ── System font search paths for BMP text rendering ───────────────────────────
+# ── Font search paths for BMP text rendering ──────────────────────────────────
 # Tried in order; first existing file wins. Source: api.py _FONT_PATHS.
+# Paths prefixed with "image_tests/" are relative to the project root.
 
 FONT_PATHS: list[str] = [
+    "image_tests/EvenSignature_Final 1.0_English Only.otf",   # primary — Even Realities brand font
+    "image_tests/EvenRosterGrotesk_Final 1.0_English Only.otf",
+    "image_tests/EvenTimeBigPixel_v1.0.ttf",
     "/System/Library/Fonts/SFNS.ttf",
     "/System/Library/Fonts/Helvetica.ttc",
     "/System/Library/Fonts/HelveticaNeue.ttc",
