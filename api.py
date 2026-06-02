@@ -198,7 +198,7 @@ def _to_stereo_bmp_pair(
     return _finalize(left_arr), _finalize(right_arr)
 
 
-_TEXT_MANUAL = 0x31  # 0x30 (AI Displaying) | 0x01 (New Content) — used by official app for tap-to-advance
+_TEXT_MANUAL = 0x71  # 0x70 (Text Show) | 0x01 (New Content) — avoids Even AI recording UI chrome
 
 # Weekday mapping: Python's weekday() is 0=Mon…6=Sun; glasses expect 0=Sun…6=Sat
 _PY_TO_GLASS_WEEKDAY = [1, 2, 3, 4, 5, 6, 0]
@@ -394,6 +394,9 @@ async def _glass_request(glass, cmd: bytes, resp_byte_idx: int, timeout: float =
         glass.notification_handler = original_handler
 
 
+_DISPLAY_COMPLETE = bytes([0x4E, 0x00, 0x01, 0x00, 0x40, 0x00, 0x00, 0x00, 0x01])
+
+
 async def _send_image_to_glass(glass, frames: list[bytes], end_cmd: bytes, crc_cmd: bytes) -> bool:
     """Send BMP data to one glass with end-of-transfer and CRC verification."""
     for frame in frames:
@@ -405,7 +408,12 @@ async def _send_image_to_glass(glass, frames: list[bytes], end_cmd: bytes, crc_c
         return False
 
     # CRC command: glasses respond with 0xC9 at byte index 5 on success
-    return await _glass_request(glass, crc_cmd, resp_byte_idx=5)
+    if not await _glass_request(glass, crc_cmd, resp_byte_idx=5):
+        return False
+
+    # Signal display complete (0x40) so the firmware dismisses the Even AI recording overlay
+    await glass.client.write_gatt_char(_UART_TX, _DISPLAY_COMPLETE, response=False)
+    return True
 
 
 async def _transmit_image(left_glass, right_glass, bmp_data: bytes) -> dict:

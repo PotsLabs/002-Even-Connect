@@ -2,10 +2,13 @@
 set -e
 cd "$(dirname "$0")"
 
-echo "Building React frontend..."
-cd frontend && npm install --silent && npm run build
-cd ..
+# Load Rust/Cargo into PATH
+source "$HOME/.cargo/env" 2>/dev/null || true
 
-echo "Starting EvenConnect on http://localhost:8000"
-source venv/bin/activate
-uvicorn api:app --host 0.0.0.0 --port 8000
+echo "Installing frontend dependencies..."
+cd frontend && npm install --silent
+
+echo "Launching KiroshiOS (Tauri menu bar app)..."
+echo "  • Vite dev server starts automatically"
+echo "  • Python backend (api.py) is spawned by Tauri on launch"
+npm run tauri:dev

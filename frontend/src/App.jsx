@@ -56,13 +56,10 @@ export default function App() {
 
   return (
     <div className="layout">
-      {/* Sidebar */}
-      <aside className="sidebar">
-        <div className="sidebar-brand">
-          <h1>EvenConnect</h1>
-          <p>G1 Glasses Control</p>
-        </div>
-        <nav className="sidebar-nav">
+      {/* Top tab bar */}
+      <nav className="topbar">
+        <span className="topbar-brand">KiroshiOS</span>
+        <div className="topbar-tabs">
           {TABS.map((t) => (
             <button
               key={t.id}
@@ -76,8 +73,8 @@ export default function App() {
               )}
             </button>
           ))}
-        </nav>
-      </aside>
+        </div>
+      </nav>
 
       {/* Main */}
       <main className="main">
