@@ -84,7 +84,12 @@ def _to_ready_bmp(image_bytes: bytes) -> bytes:
 _frame_cache: dict[str, dict] = {}
 
 # ── Font utilities for compose ─────────────────────────────────────────────
-_ROOT = os.path.dirname(__file__)
+# When bundled by PyInstaller (frozen), __file__ is the executable itself;
+# resources land in sys._MEIPASS instead.
+if getattr(sys, "frozen", False):
+    _ROOT = sys._MEIPASS
+else:
+    _ROOT = os.path.dirname(__file__)
 _FONT_PATHS = [
     os.path.join(_ROOT, "image_tests", "EvenSignature_Final 1.0_English Only.otf"),
     os.path.join(_ROOT, "image_tests", "EvenRosterGrotesk_Final 1.0_English Only.otf"),
@@ -1265,7 +1270,12 @@ async def obsidian_search(payload: ObsidianSearchPayload):
         raise HTTPException(status_code=502, detail=str(e))
 
 
-# Serve React build if it exists
+# Serve React build if it exists (skipped when running as Tauri sidecar)
 _frontend_dist = os.path.join(os.path.dirname(__file__), "frontend", "dist")
 if os.path.isdir(_frontend_dist):
     app.mount("/", StaticFiles(directory=_frontend_dist, html=True), name="frontend")
+
+
+if __name__ == "__main__":
+    import uvicorn
+    uvicorn.run(app, host="127.0.0.1", port=8000, log_level="warning")

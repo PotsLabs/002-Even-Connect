@@ -46,8 +46,13 @@
       "icons/icon.icns",
       "icons/icon.ico"
     ],
+    "externalBin": [
+      "binaries/api"
+    ],
     "macOS": {
-      "minimumSystemVersion": "12.0"
+      "minimumSystemVersion": "12.0",
+      "entitlements": "entitlements.plist",
+      "infoPlist": "Info.plist"
     }
   }
 }
