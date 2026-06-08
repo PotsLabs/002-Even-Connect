@@ -8,6 +8,7 @@ __pycache__/
 *.egg-info/
 dist/
 build/
+*.crt 
 
 # Env / secrets
 .env
@@ -27,3 +28,4 @@ g1-sample/
 .DS_Store
 notes.txt
 
+obsidian-local-rest-api.crt
