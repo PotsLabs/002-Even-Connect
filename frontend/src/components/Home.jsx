@@ -44,7 +44,7 @@ export default function Home({ status, onStatusChange, addToast, addLog, logs, c
             const s = JSON.parse(payload.slice(8))
             onStatusChange(s)
             addToast(
-              `Connected — L: ${s.leftName || 'n/a'}  R: ${s.rightName || 'n/a'}`,
+              `Connected — L: ${s.left_name || 'n/a'}  R: ${s.right_name || 'n/a'}`,
               'success',
             )
             reader.cancel()
@@ -111,7 +111,7 @@ export default function Home({ status, onStatusChange, addToast, addLog, logs, c
               <div className="glass-chip-title">Left</div>
               <div className="glass-chip-name">
                 {status.left
-                  ? status.leftName || 'Connected'
+                  ? status.left_name|| 'Connected'
                   : <span style={{ color: 'var(--muted)' }}>Not found</span>}
               </div>
             </div>
@@ -119,7 +119,7 @@ export default function Home({ status, onStatusChange, addToast, addLog, logs, c
               <div className="glass-chip-title">Right</div>
               <div className="glass-chip-name">
                 {status.right
-                  ? status.rightName || 'Connected'
+                  ? status.right_name || 'Connected'
                   : <span style={{ color: 'var(--muted)' }}>Not found</span>}
               </div>
             </div>
