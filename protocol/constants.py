@@ -184,12 +184,27 @@ F5_EVENTS: dict[int, str] = {
 }
 
 
+# ── Connection state ──────────────────────────────────────────────────────────
+
+class ConnectionState(IntEnum):
+    DISCONNECTED = 0x00
+    CONNECTED    = 0x01
+
+
 # ── Inbound commands to suppress in event logs (too noisy) ────────────────────
 # Source: api.py _KNOWN_SILENT
 
 SILENT_CMDS: set[int] = {
     0x25,   # heartbeat ack
 }
+
+
+# ── Display complete packet ────────────────────────────────────────────────────
+# Signals firmware to dismiss Even AI recording overlay after BMP transfer.
+# Packet: [0x4E, 0x00, 0x01, 0x00, 0x40, 0x00, 0x00, 0x00, 0x01]
+# Field 4 (0x40) = FINAL_TEXT display status
+
+DISPLAY_COMPLETE = bytes([0x4E, 0x00, 0x01, 0x00, 0x40, 0x00, 0x00, 0x00, 0x01])
 
 
 # ── Font search paths for BMP text rendering ──────────────────────────────────

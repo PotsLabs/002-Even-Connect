@@ -1,18 +1,22 @@
 """
-G1 BMP image pipeline — conversion, framing, CRC, and stereo depth.
+G1 BMP image pipeline — encoding, framing, CRC, and layer composition with z-depth.
 
 Sources:
   - eveng1_python_sdk/services/display.py (_build_image_frames, _crc_command)
   - even_glasses/utils.py (construct_bmp_data_packet, construct_crc_check_command)
-  - api.py (_to_bmp_bytes, _to_stereo_bmp_pair, _compose_bmp)
-  - g1-sample G1BluetoothManager.swift (sendTextPacket dual-packet insight)
+  - api_v2.py (_img_bmp_bytes, _compute_depth, _compose_bmp)
+  - g1-sample G1BluetoothManager.swift
+
+Depth control:
+  Single depth mapping function: z ∈ [0.0, 1.0] → pixel shift via compute_depth().
+  No point-cloud depth maps — use explicit z-values for all layers.
 
 Usage:
-    bmp  = to_bmp_bytes(image_bytes)            # any format → 1-bit 576×136 BMP
-    frames = build_frames(bmp)                  # list of 0x15 packets
-    end    = BMP_END_CMD                        # [0x20, 0x0D, 0x0E]
-    crc    = build_crc_cmd(bmp)                 # [0x16, crc32be...]
-    finish = DISPLAY_COMPLETE                   # send after CRC ack to clear overlay
+    bmp = to_bmp_bytes(image_bytes)                  # any format → 1-bit 576×136 BMP
+    left, right = compute_depth([(bmp, 0.5)], max_disparity=10)
+    left_final = compose_layers(left)                # blend layers with AND logic
+    frames = build_frames(left_final)                # list of 0x15 packets
+    crc = build_crc_cmd(left_final)                  # [0x16, crc32be...]
 """
 
 import io
@@ -23,7 +27,7 @@ from .constants import BMP_WIDTH, BMP_HEIGHT, BMP_PACKET_SIZE, BMP_ADDR, BMP_END
 from .commands import build_display_complete
 
 
-# Re-export so callers can do: from protocol.bmp import BMP_END_CMD, DISPLAY_COMPLETE
+# Re-export so callers can do: from protocol.bmp import ...
 __all__ = [
     "to_bmp_bytes",
     "to_bmp_bytes_inverted",
@@ -31,8 +35,8 @@ __all__ = [
     "build_crc_cmd",
     "BMP_END_CMD",
     "DISPLAY_COMPLETE",
-    "to_stereo_pair",
-    "compose_bmp",
+    "compute_depth",
+    "compose_layers",
 ]
 
 DISPLAY_COMPLETE = build_display_complete()
@@ -102,114 +106,45 @@ def build_crc_cmd(bmp_data: bytes) -> bytes:
     ])
 
 
-# ── Stereo depth ───────────────────────────────────────────────────────────────
+# ── Layer blending with z-depth ───────────────────────────────────────────────
 
-def to_stereo_pair(
-    image_bytes: bytes,
-    max_disparity: int = 6,
-    blur_radius: float = 3.0,
-    invert_depth: bool = False,
-    z_shift: float = 0.0,
-) -> tuple[bytes, bytes]:
+def compute_depth(layers: list[tuple[bytes, float]], max_disparity: int) -> tuple[list, list]:
     """
-    Generate left/right 1-bit BMP pair using luminance as a depth proxy.
+    Split layers into left/right eyes based on depth (z-value).
+    z=0.0 → no shift, z=1.0 → full disparity shift.
+    Returns (left_layers, right_layers), each as list of (bmp_bytes, x_shift).
+    """
+    left_layers, right_layers = [], []
+    for bmp_bytes, z in layers:
+        shift = int(round(z * max_disparity))
+        left_layers.append((bmp_bytes, -shift))
+        right_layers.append((bmp_bytes, +shift))
+    return left_layers, right_layers
 
-    Bright pixels = near (large outward shift), dark pixels = far (no shift).
-    Set invert_depth=True for dark-on-light content (point clouds, line art).
-    z_shift: global depth offset in the range [-1.0, 1.0], mapped to ±max_disparity pixels.
-    Source: api.py _to_stereo_bmp_pair (extended with z_shift support).
+
+def compose_layers(layers: list[tuple[bytes, int]]) -> bytes:
     """
-    from PIL import ImageFilter
+    Blend inverted BMPs with AND logic (np.minimum).
+    Each layer is (bmp_bytes, x_shift): negative shift = left, positive = right.
+    Returns single 1-bit BMP with all layers composited.
+    """
     import numpy as np
 
-    img = Image.open(io.BytesIO(image_bytes)).convert("L")
-    img.thumbnail((BMP_WIDTH, BMP_HEIGHT), Image.LANCZOS)
-    canvas = Image.new("L", (BMP_WIDTH, BMP_HEIGHT), 0)
-    canvas.paste(img, ((BMP_WIDTH - img.width) // 2, (BMP_HEIGHT - img.height) // 2))
+    canvas = np.full((BMP_HEIGHT, BMP_WIDTH), 255, dtype=np.uint8)
+    for bmp_bytes, x_shift in layers:
+        layer = np.array(Image.open(io.BytesIO(bmp_bytes)).convert("L"), dtype=np.uint8)
 
-    depth = canvas.filter(ImageFilter.GaussianBlur(radius=blur_radius))
-    depth_arr = np.array(depth, dtype=np.float32) / 255.0
+        if x_shift > 0:
+            shifted = np.full_like(layer, 255)
+            shifted[:, x_shift:] = layer[:, :BMP_WIDTH - x_shift]
+        elif x_shift < 0:
+            shifted = np.full_like(layer, 255)
+            shifted[:, :BMP_WIDTH + x_shift] = layer[:, -x_shift:]
+        else:
+            shifted = layer
 
-    if invert_depth:
-        depth_arr = 1.0 - depth_arr
+        canvas = np.minimum(canvas, shifted)
 
-    global_shift = int(round(z_shift * max_disparity))
-
-    def _make_eye(direction: int) -> bytes:
-        shift_map = np.round(depth_arr * max_disparity).astype(int) + global_shift * direction
-        src = np.array(canvas, dtype=np.uint8)
-        out = np.zeros_like(src)
-        for col in range(BMP_WIDTH):
-            shifted = col + shift_map[:, col] * direction
-            shifted = np.clip(shifted, 0, BMP_WIDTH - 1)
-            out[:, col] = src[np.arange(BMP_HEIGHT), shifted]
-
-        shifted_img = Image.fromarray(out, mode="L")
-        bmp = shifted_img.point(lambda p: 0 if p > 64 else 255).convert("1")
-        buf = io.BytesIO()
-        bmp.save(buf, format="BMP")
-        return buf.getvalue()
-
-    return _make_eye(-1), _make_eye(+1)   # left eye, right eye
-
-
-# ── Compose (background + layers) ─────────────────────────────────────────────
-
-def compose_bmp(
-    background_bytes: bytes | None,
-    text_blocks: list[dict],
-    image_layers: list[dict] | None = None,
-) -> bytes:
-    """
-    Compose a 576×136 1-bit BMP from optional background + text/image layers.
-
-    text_blocks: list of dicts with keys:
-        text, size (px), align_h ('left'|'center'|'right'),
-        align_v ('top'|'middle'|'bottom'), color ('white'|'black'), z (float)
-
-    image_layers: list of dicts with keys:
-        image_bytes (bytes), z (float), x_offset (int), y_offset (int)
-
-    Source: api.py _compose_bmp (restructured for reuse).
-    """
-    from PIL import ImageDraw, ImageFont
-
-    canvas = Image.new("L", (BMP_WIDTH, BMP_HEIGHT), 0)
-
-    if background_bytes:
-        bg = Image.open(io.BytesIO(background_bytes)).convert("L")
-        bg = bg.resize((BMP_WIDTH, BMP_HEIGHT), Image.LANCZOS)
-        canvas.paste(bg)
-
-    if image_layers:
-        for layer in image_layers:
-            raw = Image.open(io.BytesIO(layer["image_bytes"])).convert("L")
-            x = layer.get("x_offset", 0)
-            y = layer.get("y_offset", 0)
-            canvas.paste(raw, (x, y))
-
-    draw = ImageDraw.Draw(canvas)
-    for block in text_blocks:
-        text  = block.get("text", "")
-        size  = block.get("size", 14)
-        color = 255 if block.get("color", "white") == "white" else 0
-        h_al  = block.get("align_h", "left")
-        v_al  = block.get("align_v", "top")
-
-        try:
-            font = ImageFont.truetype("/System/Library/Fonts/Helvetica.ttc", size)
-        except Exception:
-            font = ImageFont.load_default()
-
-        bbox = draw.textbbox((0, 0), text, font=font)
-        tw, th = bbox[2] - bbox[0], bbox[3] - bbox[1]
-
-        x = {"left": 4, "center": (BMP_WIDTH - tw) // 2, "right": BMP_WIDTH - tw - 4}.get(h_al, 4)
-        y = {"top": 2, "middle": (BMP_HEIGHT - th) // 2, "bottom": BMP_HEIGHT - th - 2}.get(v_al, 2)
-
-        draw.text((x, y), text, fill=color, font=font)
-
-    bmp = canvas.point(lambda p: 0 if p > 64 else 255).convert("1")
     buf = io.BytesIO()
-    bmp.save(buf, format="BMP")
+    Image.fromarray(canvas).convert("1").save(buf, format="BMP")
     return buf.getvalue()
