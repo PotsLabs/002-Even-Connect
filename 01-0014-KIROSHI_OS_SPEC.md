@@ -1,8 +1,21 @@
 # KiroshiOS — Product Specification
 
-> **Status:** Pre-development — concept validated, architecture designed, no code shipped yet.
-> **Last updated:** 2026-05-29
-> **Maintainer:** [your name]
+> **Status:** M0 (core protocol + API refactored) → Ready for M1 (Obsidian integration).
+> **Last updated:** 2026-06-09
+> **Repository:** 005-EvenConnect (rewrite branch)
+
+---
+
+## Current Interface
+
+### Runtime Composition (Background with Text Input)
+<img width="1512" height="982" alt="Compose Screen" src="https://github.com/user-attachments/assets/6dfcfad2-a842-46ff-a464-55b5822eb8ab" />
+
+### Image Queueing (Manual Cycle of Image List)
+<img width="1512" height="982" alt="Screenshot 2026-05-26 at 20 51 03" src="https://github.com/user-attachments/assets/0322c869-a682-4ade-867e-f55027198d75" />
+
+### Glasses Connection Terminal (BLE Status & Errors)
+<img width="1512" height="982" alt="Screenshot 2026-05-26 at 20 52 36" src="https://github.com/user-attachments/assets/d1825376-ca12-4632-9aca-fb5a5ebf8a2b" />
 
 ---
 
@@ -89,6 +102,9 @@ AI compares today's daily note template with yesterday's unchecked items. If a t
 
 **Daily task view**
 Today's tasks as an ordered list pulled from Obsidian daily note. Paginated via touchbar. Track time against active task.
+
+**`even_print` — glasses stdout**
+Drop-in utility for sending any Python value or terminal output directly to the glasses as paginated text. `even_print(value)` encodes the string representation, paginates it, and pushes it over BLE exactly like a manual text send — no HTTP, no frontend, no SSE. Intended for status checks, script output tails, and low-frequency log lines where you want eyes-up feedback without opening a terminal. Not for high-throughput streaming (use SSE + frontend for that).
 
 **On-the-go capture**
 Long press → voice note → AI transcribes → saves to correct location in Obsidian vault using the right template. Tags for today/this week/this month as appropriate. Items tagged "research" or "look into later" get filed for resurfacing.
@@ -201,20 +217,207 @@ End of day/week: total spent, budget vs actual, tied back to financial goals doc
 
 ---
 
-## Milestones
+---
 
-| Milestone | Description | Status |
+## Build Roadmap & Progress
+
+### M0 — Core Protocol & API ✅ COMPLETE (2026-06-09)
+
+**Architecture Refactored:** Separated BLE/protocol logic from HTTP API layer.
+
+**Core Capabilities Wired:**
+| Component | Status | Details |
+|-----------|--------|---------|
+| Connection | ✅ | Scan, dual-glass connect, time sync, event handlers |
+| Text Send | ✅ | Paginate + tap-to-advance (5-line pages) |
+| Image/Stereo | ✅ | 1-bit BMP, z-depth composition, ACK handshake |
+| Obsidian Integration | ✅ | Module built (`integrations/obsidian.py`) |
+
+**Tech Stack Cleanup:**
+- ✅ Extracted `protocol/` package (pure bytes, no HTTP)
+  - `connect.py`: BLE lifecycle + send pipelines
+  - `bmp.py`: Image encoding + stereo composition
+  - `commands.py`: Packet builders
+  - `constants.py`: All enums, UUIDs
+- ✅ Thin API layer: `api_v3.py` (231 lines, 72% reduction from v2)
+- ✅ Frontend: React tabs (Text, Image, Obsidian, Logs)
+- ✅ Android app: Fully standalone (no laptop required)
+- ✅ Deferred: Preview endpoints (can add back later)
+
+**Known Issues (low severity):**
+- `leftName`/`rightName` camelCase mismatch (cosmetic)
+- Preview endpoints not yet wired (nice-to-have)
+
+---
+
+### M1 — Obsidian Bridge (Next)
+
+**Goal:** Read today's daily note from vault → paginate to glasses → tap to advance.
+
+**What's needed:**
+1. ObsidianVault API client (✅ done in `integrations/obsidian.py`)
+2. Endpoint to call `sync_note()` from frontend
+3. Test with actual vault
+
+**Timeline:** ~1 week (API integration only)
+
+---
+
+### M2 — Morning Synthesis
+
+**Goal:** Calendar + yesterday's note + sleep data → AI brief on glasses.
+
+**Requirements:**
+- Calendar connector (Google Calendar API)
+- Garmin/health data fetch
+- Local Ollama for synthesis
+- 3–4 screen morning brief
+
+**Timeline:** ~3 weeks (includes Ollama setup)
+
+---
+
+### M3 — On-the-Go Voice Capture
+
+**Goal:** Long press → voice note → transcribe → save to vault with template.
+
+**Requirements:**
+- G1 microphone quality test
+- Speech-to-text (local Whisper)
+- Vault file write with date-based organization
+
+**Timeline:** ~2 weeks
+
+---
+
+### M4 — Rollover Detection + Task Tracking
+
+**Goal:** Daily note comparison → flag carried-over tasks → time tracking.
+
+**Requirements:**
+- Yesterday's note vs today's template parse
+- Task list extraction
+- Time tracking state machine
+
+**Timeline:** ~2 weeks
+
+---
+
+### M5–M7 — Context-Aware Modules
+
+| Milestone | Feature | Status |
 |---|---|---|
-| M0 | Send "Hello World" text to G1 over BLE | Not started |
-| M1 | Read Obsidian daily note, display as paginated text on glasses | Not started |
-| M2 | Morning synthesis: calendar + daily note + sleep data → AI briefing on glasses | Not started |
-| M3 | On-the-go voice capture → transcribe → save to vault | Not started |
-| M4 | Rollover detection + task tracking with time | Not started |
-| M5 | Ghost navigation from calendar events | Not started |
-| M6 | Pre-meeting context flash cards | Not started |
-| M7 | Financial capture + digest | Not started |
-| M8 | Local API server (multi-connector architecture) | Not started |
-| M9 | ATAK-Civ connector prototype | Not started |
+| M5 | Ghost navigation (calendar location → ETA) | Planned |
+| M6 | Pre-meeting flash cards (who, last notes, actions) | Planned |
+| M7 | Financial capture + digest (spend logging + budget) | Planned |
+
+---
+
+### M8 — Local API Server (Multi-Connector)
+
+**Goal:** Generalized connector architecture (no longer a Python script).
+
+**Architecture:**
+```
+Obsidian ┐
+Calendar ├─→ Connector Registry ─→ FastAPI ─→ Glasses
+Health   ┤       (module mgmt)
+Custom   ┘
+```
+
+**Timeline:** ~4 weeks (includes module system redesign)
+
+---
+
+### M9 — ATAK-Civ Tactical HUD (Future)
+
+**Goal:** Display coordinates, team positions, mesh comms on glasses in field.
+
+**Status:** Validated market need (unprompted request from security professional).
+
+**Timeline:** Post-M4 (depends on field deployment opportunity).
+
+---
+
+## Frontend QoL (Complete — as of 2026-05-30)
+
+| Task | Status |
+|------|--------|
+| Compose tab: default text size/padding → 14px | ✅ |
+| Compose: persistent background (localStorage) | ✅ |
+| Image tab: queue state restored on tab switch | ✅ |
+| Text + Compose unified into Send tab | ✅ |
+| Stereo: default max disparity → 10 | ✅ |
+| Per-layer z-depth control (−5 → +5) | ✅ |
+
+---
+
+## Platform Ports
+
+### Android ✅ SHIPPED
+
+**Device:** Realme RMX3938 · Android 15 · SDK 35
+
+**Features:**
+- BLE scan, dual-glass connect, time sync
+- Text display (direct mode, no AI overlay)
+- Right tap = next, left tap = previous
+- Image gallery → 1-bit BMP → send
+- Live BLE event log (color-coded)
+
+**Known Limitations:**
+- No stereo/z-depth compose yet (BMP only)
+- Obsidian integration not ported
+- iOS background BLE restricted (~10 min timeout without state restoration)
+
+### macOS Menubar (Pending)
+
+**Recommended:** Native SwiftUI (`NSStatusItem` + `NSPopover`). Embed Python backend as subprocess. Use `CoreBluetooth` (not Python BLE stack).
+
+**Why not React Native:** No clean `NSStatusItem` support in `react-native-macos`.
+
+---
+
+## Deferred / Nice-to-Have
+
+### Preview Endpoints
+- `/api/preview-bmp` — show 1-bit BMP preview
+- `/api/preview-stereo-compose` — show left/right pair before send
+- **Why deferred:** Not core; can be added once pipeline is stable
+- **How:** Simple endpoints returning PNG data URIs
+
+---
+
+## Design Principles
+
+1. **The glasses are a dumb terminal.** All intelligence lives on the host.
+2. **Context is king.** What's shown depends on where, when, and what you're doing. The OS decides; you just glance.
+3. **Glanceability over density.** Every screen answers one question in under 2 seconds.
+4. **Local-first, private by default.** No cloud accounts, no data leaving your network, no vendor lock-in. Obsidian vault is the source of truth.
+5. **Read-write loop.** The glasses aren't just a display — they capture back into the vault. The system feeds itself.
+6. **Modules are self-contained.** Adding a new feature = writing a new module class. Nothing else changes.
+7. **Build where the river is.** Start with what's useful to you today. Don't build infrastructure ahead of need.
+
+---
+
+## Key Lessons Applied (from Launch Lab talk, 28 May 2026)
+
+- "Don't build dams where there aren't rivers" → Build the Obsidian connector first because you use it daily. Pursue ATAK because someone is already asking for it.
+- "Track engagement" → If you don't wear the glasses every day because they're useful, the product doesn't work. Morning brief is the engagement hook.
+- "Go where Silicon Valley isn't looking" → Tactical field HUD for security teams on mesh networks. Knowledge worker vault-to-glasses bridge. Neither is a SF startup pitch.
+- "Capital light + existing distribution" → Software layer on Even Realities hardware. No manufacturing.
+- "You are not the failure — the thing you built didn't work" → Build small, prove value, iterate. Don't over-invest in infrastructure before the core loop works.
+- "Try a thing. Speak to the market." → Demo the morning brief. Talk to the ATAK person.
+
+---
+
+## Open Questions
+
+- [ ] G1 mic quality: is on-device voice capture good enough for transcription, or does it need phone mic passthrough?
+- [ ] BLE bandwidth limits: how frequently can BMP frames be pushed before battery drain becomes a problem?
+- [ ] Ollama model selection: what's the smallest model that can do useful synthesis over a markdown vault?
+- [ ] Multi-user: does this ever need to support more than one person, or is it a personal tool only?
+- [ ] Monetisation: personal tool → open source? Tactical connector → paid product? Module marketplace?
 
 ---
 
