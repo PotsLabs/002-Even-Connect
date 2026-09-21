@@ -1,9 +1,13 @@
 // In Tauri builds the webview's base URL is tauri://localhost, so relative /api
 // paths never reach the Python backend on port 8000.  Use the full URL instead.
 // In a plain browser (Vite dev proxy or direct access) the relative path is fine.
-const BASE = (typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window)
+export const BASE = (typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window)
   ? 'http://localhost:8000/api'
   : '/api'
+
+// For callers that can't go through request(): SSE streams, EventSource, and
+// multipart uploads all need the raw URL but the same base resolution.
+export const apiUrl = (path) => BASE + path
 
 async function request(path, options = {}, timeoutMs = 30_000) {
   const controller = new AbortController()

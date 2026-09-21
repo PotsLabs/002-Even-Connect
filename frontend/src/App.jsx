@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import './App.css'
-import { api } from './api'
+import { api, apiUrl } from './api'
 import Home from './components/Home'
 import TextTab from './components/TextTab'
 import ComposeTab from './components/ComposeTab'
@@ -46,7 +46,7 @@ export default function App() {
   // Stream touchpad / wear events from the glasses into the activity log
   useEffect(() => {
     if (!status.connected) return
-    const es = new EventSource('/api/events/stream')
+    const es = new EventSource(apiUrl('/events/stream'))
     es.onmessage = (e) => {
       if (e.data && e.data.trim()) addLog(e.data)
     }

@@ -465,7 +465,14 @@ async def connect_stream():
     handler = _QueueHandler()
     handler.setFormatter(logging.Formatter("%(levelname)s:%(name)s:%(message)s"))
 
-    _targets = [logging.getLogger("bleak")]
+    # "protocol" is the parent of protocol.connect, so its records propagate
+    # up to this handler. Without it the stream carries only bleak's own
+    # output and the activity log stays empty through the whole scan.
+    _targets = [
+        logging.getLogger("bleak"),
+        logging.getLogger("protocol"),
+        logger,
+    ]
     _prev_levels = [(lg, lg.level) for lg in _targets]
     for lg in _targets:
         lg.addHandler(handler)

@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react'
-import { api } from '../api'
+import { api, apiUrl } from '../api'
 
 export default function Models3D({ status, addToast, addLog }) {
   const [models, setModels] = useState([])
@@ -40,7 +40,7 @@ export default function Models3D({ status, addToast, addLog }) {
       const formData = new FormData()
       formData.append('file', file)
 
-      const response = await fetch('/api/models', {
+      const response = await fetch(apiUrl('/models'), {
         method: 'POST',
         body: formData,
       })

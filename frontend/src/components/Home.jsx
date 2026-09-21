@@ -1,6 +1,6 @@
 import { useRef, useState } from 'react'
 // useState kept for scanning/busy local state
-import { api } from '../api'
+import { api, apiUrl } from '../api'
 import Terminal from './Terminal'
 
 export default function Home({ status, onStatusChange, addToast, addLog, logs, clearLogs }) {
@@ -19,10 +19,13 @@ export default function Home({ status, onStatusChange, addToast, addLog, logs, c
     setBusy(true)
 
     try {
-      const res = await fetch('/api/connect-stream', {
+      const res = await fetch(apiUrl('/connect-stream'), {
         method: 'POST',
         signal: ctrl.signal,
       })
+
+      if (!res.ok) throw new Error(`Backend returned HTTP ${res.status}`)
+      if (!res.body) throw new Error('Backend returned no stream')
 
       const reader = res.body.getReader()
       const decoder = new TextDecoder()
