@@ -11,6 +11,7 @@
 .topbar {
   display: flex;
   align-items: center;
+  flex-wrap: wrap;
   gap: 8px;
   padding: 10px 12px 0;
   flex-shrink: 0;
@@ -33,9 +34,13 @@
 
 .topbar-tabs {
   display: flex;
+  /* The window is a fixed 380px popover. Six tabs need ~436px, so with
+     overflow-x:auto (and the scrollbar hidden below) the last tabs were
+     silently scrolled out of view. Wrap instead, so every tab is reachable. */
+  flex-wrap: wrap;
   gap: 2px;
   flex: 1;
-  overflow-x: auto;
+  min-width: 0;
   -webkit-app-region: no-drag;
 }
 

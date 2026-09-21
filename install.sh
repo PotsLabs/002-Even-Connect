@@ -52,27 +52,34 @@ if lsof -iTCP:8000 -sTCP:LISTEN >/dev/null 2>&1; then
   lsof -iTCP:8000 -sTCP:LISTEN | tail -n +2 | sed 's/^/      /'
 fi
 
-# ── 3. Unregister every known copy ────────────────────────────────────────────
-# Each successful build registers the copy inside the DMG scratch volume. Those
-# volumes get ejected but the registration survives, so `open -a KiroshiOS` can
-# resolve to a copy that no longer exists or, worse, a stale one that does.
-echo "==> Unregistering stale LaunchServices entries"
-if [ -x "$LSREGISTER" ]; then
-  "$LSREGISTER" -dump 2>/dev/null \
-    | grep -oE "/[^ ]*$APP_NAME" \
-    | sort -u \
-    | while read -r path; do
-        echo "    - $path"
-        "$LSREGISTER" -u "$path" 2>/dev/null || true
-      done
-fi
-
-# ── 4. Detach leftover DMG scratch volumes ────────────────────────────────────
+# ── 3. Detach leftover DMG scratch volumes ────────────────────────────────────
+# Detach BEFORE unregistering: unregistering a path on a still-mounted volume
+# lets LaunchServices re-add it from the live volume moments later.
 for vol in /Volumes/dmg.*; do
   [ -d "$vol" ] || continue
   echo "==> Detaching $vol"
   hdiutil detach "$vol" -force >/dev/null 2>&1 || true
 done
+
+# ── 4. Unregister every known copy ────────────────────────────────────────────
+# Each successful build registers the copy inside the DMG scratch volume. Those
+# volumes get ejected but the registration survives, so `open -a KiroshiOS` can
+# resolve to a copy that no longer exists or, worse, a stale one that does.
+# Pass an argument to keep that one path registered.
+prune_registrations() {
+  [ -x "$LSREGISTER" ] || return 0
+  "$LSREGISTER" -dump 2>/dev/null \
+    | grep -oE "/[^ ]*$APP_NAME" \
+    | sort -u \
+    | while read -r path; do
+        [ "$path" = "${1:-}" ] && continue
+        echo "    - $path"
+        "$LSREGISTER" -u "$path" 2>/dev/null || true
+      done
+}
+
+echo "==> Unregistering stale LaunchServices entries"
+prune_registrations ""
 
 # ── 5. Remove the installed app ───────────────────────────────────────────────
 if [ -d "$INSTALLED" ]; then
@@ -105,8 +112,12 @@ echo "    bundles identical"
 
 # Register only the installed copy, so `open -a` cannot pick anything else.
 if [ -x "$LSREGISTER" ]; then
-  "$LSREGISTER" -u "$BUILT" 2>/dev/null || true
   "$LSREGISTER" -f "$INSTALLED" 2>/dev/null || true
+  # Second pass: LaunchServices re-adds entries during the run — a detached
+  # scratch volume can reappear in the database after the first prune — so
+  # sweep again now that the install is in place.
+  echo "==> Pruning registrations that reappeared during install"
+  prune_registrations "$INSTALLED"
 fi
 
 # ── 7. Verify what is actually running ────────────────────────────────────────
