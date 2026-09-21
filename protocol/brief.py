@@ -27,7 +27,8 @@ from PIL import Image, ImageDraw
 from .bmp import load_font
 from .constants import BMP_WIDTH, BMP_HEIGHT
 
-__all__ = ["BriefInput", "Block", "calc_tier", "calc_power", "render_brief"]
+__all__ = ["BriefInput", "Block", "calc_tier", "calc_power", "render_brief",
+           "render_brief_text"]
 
 
 # ── Depth planes ──────────────────────────────────────────────────────────────
@@ -368,3 +369,114 @@ def render_brief(data: BriefInput, screens: list[str] | None = None) -> list[dic
             continue
         out.append({"name": name, "layers": fn(data)})
     return out
+
+
+# ── Text mode ─────────────────────────────────────────────────────────────────
+#
+# Sent through send_text() -> send_page(), which uses DisplayStatus.SIMPLE_TEXT
+# (0x70) — the direct-render path with no Even AI chrome. It is NOT
+# MANUAL_PAGE (0x50) or NORMAL_TEXT (0x30), both of which route through the
+# Even AI pipeline and bring the recording overlay with them.
+#
+# send_text() paginates on exactly 5 lines per screen, so every page here is
+# padded to TEXT_ROWS. Taps then move between pages: right = forward,
+# left = back (api_v3._on_glass_event -> step_text_page).
+
+TEXT_COLS = 40
+TEXT_ROWS = 5
+
+
+def _flat(s: str) -> str:
+    """Collapse user-supplied text to a single spaced line."""
+    return " ".join(str(s).split())
+
+
+def _clip(s: str, width: int = TEXT_COLS) -> str:
+    """Truncate to width. Does not touch internal spacing — _row's padding
+    has to survive this."""
+    return s if len(s) <= width else s[: max(0, width - 1)].rstrip() + "…"
+
+
+def _row(left: str, right: str = "", width: int = TEXT_COLS) -> str:
+    """One line with `left` flush left and `right` flush right."""
+    left, right = _flat(left), _flat(right)
+    if not right:
+        return _clip(left, width)
+    gap = width - len(right) - len(left)
+    if gap < 1:
+        left = left[: max(0, width - len(right) - 1)].rstrip()
+        gap = max(1, width - len(right) - len(left))
+    return f"{left}{' ' * gap}{right}"
+
+
+def _page(lines: list[str]) -> list[str]:
+    """Pad or trim to exactly TEXT_ROWS so send_text's 5-line split aligns."""
+    out = [_clip(l) for l in lines[:TEXT_ROWS]]
+    while len(out) < TEXT_ROWS:
+        out.append("")
+    return out
+
+
+def _text_brief(data: BriefInput) -> list[str]:
+    tier, tier_sub = calc_tier(data.energy, data.focus, data.window_minutes)
+    return _page([
+        _row("OPERATOR BRIEF", datetime.now().strftime("%a %d %b").upper()),
+        tier,
+        tier_sub,
+        _clip(f"> {_flat(data.one_thing) or 'Not defined - name it first'}"),
+        _row(DOMAIN_LABELS.get(data.domain, "Other"),
+             f"{data.t_start}-{data.t_end}"),
+    ])
+
+
+def _text_blocks(data: BriefInput) -> list[str]:
+    blocks = [b for b in data.blocks if (b.name or b.start)][:MAX_ROWS]
+    lines = [_row("SCHEDULED BLOCKS", f"{len(blocks)}/{MAX_ROWS}")]
+
+    if not blocks:
+        lines.append("No blocks scheduled")
+    else:
+        for i, b in enumerate(blocks):
+            span = f"{b.start or '--:--'}-{b.end or '--:--'}"
+            name = _flat(b.name) or f"Block {i + 1}"
+            # index (3) + span (11) + a space either side
+            lines.append(_row(f"{i + 1:02d} {name[:22]}", span))
+    return _page(lines)
+
+
+def _text_power(data: BriefInput) -> list[str]:
+    p = calc_power(data.energy, data.focus, data.checks_done)
+    bar_w = 20
+    filled = int(round(bar_w * min(100, max(0, p["total"])) / 100))
+    pills = " ".join(
+        f"{CHECK_LABELS[k]}{'+' if data.checks.get(k) else '-'}" for k in CHECK_KEYS
+    )
+    return _page([
+        "OPERATOR POWER INDEX",
+        _row(f"{p['total']}/100", "[" + "#" * filled + "." * (bar_w - filled) + "]"),
+        f"RESOURCE {p['resource']}  CHECKS {p['checks']}  BASE {p['base']}",
+        pills,
+        _row("WINDOW " + fmt_minutes(data.window_minutes),
+             f"E{data.energy} F{data.focus}"),
+    ])
+
+
+TEXT_SCREENS = {
+    "brief": _text_brief,
+    "blocks": _text_blocks,
+    "power": _text_power,
+}
+
+
+def render_brief_text(data: BriefInput, screens: list[str] | None = None) -> str:
+    """Render the brief as paginated plain text, 5 lines per page.
+
+    Returns a single newline-joined string for send_text(), which splits it
+    back into 5-line pages and hands paging to the touchpads.
+    """
+    lines: list[str] = []
+    for name in (screens or ["brief", "blocks", "power"]):
+        fn = TEXT_SCREENS.get(name)
+        if fn is not None:
+            lines.extend(fn(data))
+    return "\n".join(lines)

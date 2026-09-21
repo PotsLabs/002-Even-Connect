@@ -133,6 +133,7 @@ class BriefPayload(BaseModel):
     checks: dict[str, bool] = {}
     blocks: list[BlockPayload] = []
     screens: list[str] = ["brief", "blocks", "power"]
+    mode: str = "text"  # "text" = paginated raw text, tap to page; "image" = stereo BMP
     dwellSeconds: float = 6.0
     maxDisparity: int = 10  # MAX_DISPARITY is defined below the models
 
@@ -754,6 +755,32 @@ async def send_brief(payload: BriefPayload):
             blocks=[Block(b.name, b.start, b.end) for b in payload.blocks],
         )
 
+        if not payload.screens:
+            raise ValueError("No screens selected")
+
+        # ── Text mode ────────────────────────────────────────────────────────
+        # Goes through send_text() -> send_page(), which renders with
+        # DisplayStatus.SIMPLE_TEXT (0x70): the direct path, no Even AI chrome.
+        # Explicitly NOT MANUAL_PAGE (0x50) or NORMAL_TEXT (0x30), which route
+        # through Even AI and bring the recording overlay. Paging is handled by
+        # the touchpads via _on_glass_event -> step_text_page.
+        if payload.mode == "text":
+            from protocol.brief import render_brief_text
+
+            body = render_brief_text(data, payload.screens)
+            await send_text(manager, body)
+
+            pages = len(body.split("\n")) // 5
+            tier, _ = calc_tier(data.energy, data.focus, data.window_minutes)
+            logger.info("Brief sent as raw text: %d page(s)", pages)
+            return {
+                "mode": "text",
+                "pages": pages,
+                "tier": tier,
+                "power": calc_power(data.energy, data.focus, data.checks_done),
+            }
+
+        # ── Image mode ───────────────────────────────────────────────────────
         screens = render_brief(data, payload.screens)
         if not screens:
             raise ValueError("No screens selected")
@@ -787,6 +814,7 @@ async def send_brief(payload: BriefPayload):
 
         tier, _ = calc_tier(data.energy, data.focus, data.window_minutes)
         return {
+            "mode": "image",
             "sent": sent,
             "tier": tier,
             "power": calc_power(data.energy, data.focus, data.checks_done),

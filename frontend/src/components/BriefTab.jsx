@@ -41,6 +41,7 @@ const DEFAULTS = {
   blocks: [],
   screens: ['brief', 'blocks', 'power'],
   dwellSeconds: 6,
+  mode: 'text',
 }
 
 function loadSaved() {
@@ -120,7 +121,10 @@ export default function BriefTab({ status, addToast }) {
     setSending(true)
     try {
       const res = await api.sendBrief(f)
-      addToast(`Brief sent — ${res.tier} · index ${res.power.total}`, 'success')
+      const detail = res.mode === 'text'
+        ? `${res.pages} page${res.pages === 1 ? '' : 's'} — tap to page`
+        : `index ${res.power.total}`
+      addToast(`Brief sent — ${res.tier} · ${detail}`, 'success')
     } catch (e) {
       addToast(e.message, 'error')
     } finally {
@@ -257,10 +261,25 @@ export default function BriefTab({ status, addToast }) {
           ))}
         </div>
 
-        <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 12 }}>
+        <div style={{ display: 'flex', gap: 14, flexWrap: 'wrap', marginBottom: 12 }}>
+          {[
+            { id: 'text',  label: 'Raw text (tap to page)' },
+            { id: 'image', label: 'Stereo image' },
+          ].map((m) => (
+            <label key={m.id} style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 13, cursor: 'pointer' }}>
+              <input type="radio" name="briefmode" checked={f.mode === m.id}
+                onChange={() => set({ mode: m.id })} />
+              {m.label}
+            </label>
+          ))}
+        </div>
+
+        <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 12,
+                      opacity: f.mode === 'text' ? 0.4 : 1 }}>
           <span className="compose-ctrl-label" style={{ minWidth: 60 }}>Dwell</span>
           <input type="range" className="param-slider" min={2} max={15} step={1}
             value={f.dwellSeconds}
+            disabled={f.mode === 'text'}
             onChange={(e) => set({ dwellSeconds: parseInt(e.target.value, 10) })} />
           <span className="compose-ctrl-val" style={{ minWidth: 34 }}>{f.dwellSeconds}s</span>
         </div>
@@ -279,9 +298,15 @@ export default function BriefTab({ status, addToast }) {
           </div>
         )}
         <div style={{ color: 'var(--muted)', fontSize: 12, marginTop: 10, lineHeight: 1.6 }}>
-          Screens are pushed in order and each is held for the dwell time. Sending
-          {' '}{f.screens.length} screen{f.screens.length === 1 ? '' : 's'} takes about
-          {' '}{Math.max(0, (f.screens.length - 1) * f.dwellSeconds)}s.
+          {f.mode === 'text' ? (
+            <>All {f.screens.length} screen{f.screens.length === 1 ? '' : 's'} are sent at
+            once as {f.screens.length} page{f.screens.length === 1 ? '' : 's'} of raw text.
+            Tap the right touchpad to go forward, the left to go back.</>
+          ) : (
+            <>Screens are pushed in order and each is held for the dwell time. Sending
+            {' '}{f.screens.length} screen{f.screens.length === 1 ? '' : 's'} takes about
+            {' '}{Math.max(0, (f.screens.length - 1) * f.dwellSeconds)}s.</>
+          )}
         </div>
       </div>
     </div>
