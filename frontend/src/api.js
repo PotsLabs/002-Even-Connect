@@ -47,6 +47,9 @@ export const api = {
   sendCompose:       (payload)                                                             => request('/send-compose',         { method: 'POST', body: JSON.stringify(payload) },                        STEREO),
   sendStereoPair:    (layers, maxDisparity = 10)                                           => request('/send-stereo-compose',  { method: 'POST', body: JSON.stringify({ layers, maxDisparity }) },       STEREO),
 
+  // Morning brief — renders server-side and pushes straight to the glasses
+  sendBrief:         (payload)                                                             => request('/send-brief',           { method: 'POST', body: JSON.stringify(payload) },                        STEREO),
+
   // Layout endpoints
   listLayouts:       ()                                                                    => request('/layouts',              {},                                                           FAST),
   saveLayout:        (name, layers)                                                        => request('/layouts',              { method: 'POST', body: JSON.stringify({ name, layers }) },               FAST),

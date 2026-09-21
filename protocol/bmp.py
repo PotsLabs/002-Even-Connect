@@ -24,7 +24,10 @@ Text composition:
 """
 
 import io
+import sys
 import zlib
+from functools import lru_cache
+from pathlib import Path
 from PIL import Image, ImageOps, ImageDraw, ImageFont
 
 from .constants import BMP_WIDTH, BMP_HEIGHT, BMP_PACKET_SIZE, BMP_ADDR, BMP_END_CMD
@@ -42,6 +45,7 @@ __all__ = [
     "compose_layers",
     "compose_text_blocks",
     "render_text_block",
+    "load_font",
 ]
 
 DISPLAY_COMPLETE = build_display_complete()
@@ -149,28 +153,64 @@ def compose_layers(layers: list[tuple[bytes, int]]) -> bytes:
 
 # ── Text rendering ───────────────────────────────────────────────────────────
 
-def _load_font(size: int = 14):
-    """Load a font with size support. Defaults to system font or PIL's default."""
-    try:
-        # PIL 10.0.0+ supports size on load_default
-        return ImageFont.load_default(size=size)
-    except (TypeError, AttributeError):
-        # Fallback for older PIL or if size not supported
+# ── Fonts ─────────────────────────────────────────────────────────────────────
+#
+# The Even Realities faces live in image_tests/ and are bundled into the frozen
+# app by api.spec. _MEIPASS points at the unpacked bundle; from source it is the
+# repo root, one level above this package.
+
+def _font_dir() -> Path:
+    root = Path(getattr(sys, "_MEIPASS", Path(__file__).resolve().parent.parent))
+    return root / "image_tests"
+
+
+FONT_FILES = {
+    "display":   "EvenRosterGrotesk_Final 1.0_English Only.otf",
+    "signature": "EvenSignature_Final 1.0_English Only.otf",
+    "pixel":     "EvenTimeBigPixel_v1.0.ttf",
+}
+
+_SYSTEM_FALLBACKS = [
+    "/System/Library/Fonts/Supplemental/Arial Narrow Bold.ttf",
+    "/System/Library/Fonts/Monaco.ttf",
+    "/usr/share/fonts/truetype/dejavu/DejaVuSansMono.ttf",
+    "/usr/share/fonts/truetype/liberation/LiberationMono-Regular.ttf",
+]
+
+
+@lru_cache(maxsize=64)
+def load_font(size: int = 14, family: str = "display"):
+    """Load an Even Realities face at `size`, falling back to a system font.
+
+    Previously this called ImageFont.load_default(size=...) first. On modern
+    Pillow that never raises, so the truetype branch below it was unreachable
+    and the bundled Even faces were never used — every render came out in
+    Pillow's built-in bitmap font.
+    """
+    name = FONT_FILES.get(family, FONT_FILES["display"])
+    candidate = _font_dir() / name
+    if candidate.is_file():
         try:
-            # Try to load a common system font with size
-            import pathlib
-            for path_str in [
-                "/System/Library/Fonts/Monaco.ttf",        # macOS
-                "/usr/share/fonts/truetype/dejavu/DejaVuSansMono.ttf",  # Linux
-                "/usr/share/fonts/truetype/liberation/LiberationMono-Regular.ttf",  # Linux
-            ]:
-                path = pathlib.Path(path_str)
-                if path.exists():
-                    return ImageFont.truetype(str(path), size=size)
+            return ImageFont.truetype(str(candidate), size=size)
         except Exception:
             pass
-        # Ultimate fallback
+
+    for path_str in _SYSTEM_FALLBACKS:
+        if Path(path_str).is_file():
+            try:
+                return ImageFont.truetype(path_str, size=size)
+            except Exception:
+                continue
+
+    try:
+        return ImageFont.load_default(size=size)
+    except (TypeError, AttributeError):
         return ImageFont.load_default()
+
+
+def _load_font(size: int = 14):
+    """Backwards-compatible alias for existing callers."""
+    return load_font(size)
 
 
 def _get_position_xy(text_bbox, position: str, canvas_w: int, canvas_h: int, padding: int = 0):

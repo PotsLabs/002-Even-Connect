@@ -5,6 +5,7 @@ import Home from './components/Home'
 import TextTab from './components/TextTab'
 import ComposeTab from './components/ComposeTab'
 import Models3D from './components/Models3D'
+import BriefTab from './components/BriefTab'
 import ObsidianTab from './components/ObsidianTab'
 
 const TABS = [
@@ -12,6 +13,7 @@ const TABS = [
   { id: 'text',     label: 'Text',     icon: <IconText /> },
   { id: 'compose',  label: 'Compose',  icon: <IconCompose /> },
   { id: 'models',   label: '3D',       icon: <Icon3D /> },
+  { id: 'brief',    label: 'Brief',    icon: <IconBrief /> },
   { id: 'obsidian', label: 'Obsidian', icon: <IconObsidian /> },
 ]
 
@@ -84,6 +86,7 @@ export default function App() {
         {tab === 'text' && <TextTab {...sharedProps} />}
         {tab === 'compose' && <ComposeTab {...sharedProps} />}
         {tab === 'models' && <Models3D {...sharedProps} />}
+        {tab === 'brief' && <BriefTab {...sharedProps} />}
         {tab === 'obsidian' && <ObsidianTab {...sharedProps} />}
       </main>
 
@@ -130,6 +133,17 @@ function Icon3D() {
       <path d="M12 2L2 7l10 5 10-5-10-5z" />
       <path d="M2 17l10 5 10-5" />
       <path d="M2 12l10 5 10-5" />
+    </svg>
+  )
+}
+
+function IconBrief() {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <rect x="3" y="4" width="18" height="16" rx="1" />
+      <path d="M3 9h18" />
+      <path d="M7 13h7" />
+      <path d="M7 16h4" />
     </svg>
   )
 }

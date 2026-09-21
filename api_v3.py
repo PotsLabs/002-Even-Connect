@@ -114,6 +114,29 @@ class SaveLayoutPayload(BaseModel):
     layers: list[dict] = []
 
 
+class BlockPayload(BaseModel):
+    name: str = ""
+    start: str = ""
+    end: str = ""
+
+
+class BriefPayload(BaseModel):
+    """Mirrors the morning-card.html form."""
+    energy: int = 7
+    focus: int = 7
+    tStart: str = "06:00"
+    tEnd: str = "21:00"
+    weekPriority: str = ""
+    oneThing: str = ""
+    domain: str = "vision"
+    stopCriteria: str = ""
+    checks: dict[str, bool] = {}
+    blocks: list[BlockPayload] = []
+    screens: list[str] = ["brief", "blocks", "power"]
+    dwellSeconds: float = 6.0
+    maxDisparity: int = 10  # MAX_DISPARITY is defined below the models
+
+
 class Render3DPayload(BaseModel):
     offsetX: float = 0.0  # Translation X (pixels)
     offsetY: float = 0.0  # Translation Y (pixels)
@@ -123,6 +146,8 @@ class Render3DPayload(BaseModel):
 
 
 MAX_DISPARITY = 10
+BRIEF_SETTLE = 0.6   # seconds to let the BLE link settle before the first screen
+BRIEF_EYE_GAP = 0.15  # seconds between the left and right eye of one screen
 
 
 def _bundle_dir() -> Path:
@@ -699,6 +724,77 @@ async def send_stereo_compose(layers: list[tuple[bytes, float]], max_disparity: 
 
         return {"left": left_ok, "right": right_ok}
     except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/api/send-brief")
+async def send_brief(payload: BriefPayload):
+    """Render the morning brief and push each screen straight to the glasses.
+
+    No preview step: screens are composed as stereo depth planes and sent in
+    sequence, holding each for dwellSeconds.
+    """
+    if not manager.left_glass and not manager.right_glass:
+        raise HTTPException(status_code=503, detail="Not connected to glasses")
+
+    try:
+        from protocol.brief import BriefInput, Block, render_brief, calc_power, calc_tier
+        from protocol.bmp import compute_depth, compose_layers
+
+        data = BriefInput(
+            energy=payload.energy,
+            focus=payload.focus,
+            t_start=payload.tStart,
+            t_end=payload.tEnd,
+            week_priority=payload.weekPriority,
+            one_thing=payload.oneThing,
+            domain=payload.domain,
+            stop_criteria=payload.stopCriteria,
+            checks=payload.checks,
+            blocks=[Block(b.name, b.start, b.end) for b in payload.blocks],
+        )
+
+        screens = render_brief(data, payload.screens)
+        if not screens:
+            raise ValueError("No screens selected")
+
+        # The first BMP transfer after a fresh connect tends to miss its ACK;
+        # give the link a moment to settle before the first screen.
+        await asyncio.sleep(BRIEF_SETTLE)
+
+        sent = []
+        for i, screen in enumerate(screens):
+            # brief.py emits z on the -5..+5 UI scale; compute_depth wants 0..1.
+            # Composing directly rather than via stereo_pair(): the planes are
+            # already display-ready BMPs, and stereo_pair calls to_bmp_bytes()
+            # with an invert= kwarg that function does not accept.
+            layers = [(bmp, (z + 5) / 10.0) for bmp, z in screen["layers"]]
+            left_layers, right_layers = compute_depth(layers, payload.maxDisparity)
+            left_bmp = compose_layers(left_layers)
+            right_bmp = compose_layers(right_layers)
+
+            # Sequential, not asyncio.gather: the G1 wire protocol is
+            # send-left / wait-ACK / send-right. Sending both eyes at once
+            # makes the end-of-transfer ACK fail intermittently.
+            left_ok = await send_bmp_to_glass(manager.left_glass, left_bmp)
+            await asyncio.sleep(BRIEF_EYE_GAP)
+            right_ok = await send_bmp_to_glass(manager.right_glass, right_bmp)
+            logger.info("Brief screen '%s' sent (L=%s R=%s)", screen["name"], left_ok, right_ok)
+            sent.append({"screen": screen["name"], "left": left_ok, "right": right_ok})
+
+            if i < len(screens) - 1:
+                await asyncio.sleep(payload.dwellSeconds)
+
+        tier, _ = calc_tier(data.energy, data.focus, data.window_minutes)
+        return {
+            "sent": sent,
+            "tier": tier,
+            "power": calc_power(data.energy, data.focus, data.checks_done),
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.exception("send-brief error")
         raise HTTPException(status_code=500, detail=str(e))
 
 
