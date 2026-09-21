@@ -1,0 +1,23 @@
+# Simple 3D arrow pointing forward-right (vanishing into +Z)
+# Viewed from above-front at slight angle
+
+# Arrow tip (pointing forward-right)
+v 10 12 0
+
+# Arrow base corners
+v 2 -6 0
+v -6 -2 0
+
+# Arrow tail (pointing backward-left, in distance)
+v 5 -9 2
+v -4 -5 2
+
+# Arrow edges
+l 1 2
+l 1 3
+l 2 3
+l 2 4
+l 3 5
+l 4 5
+l 4 1
+l 5 1

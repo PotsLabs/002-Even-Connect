@@ -15,6 +15,7 @@ function persistNotes(notes) {
 export default function TextTab({ status, addToast }) {
   const [text, setText] = useState('')
   const [sending, setSending] = useState(false)
+  const [maxDisparity, setMaxDisparity] = useState(10)
   const [notes, setNotes] = useState(loadNotes)
   const [saveHeading, setSaveHeading] = useState('')
   const [showSaveForm, setShowSaveForm] = useState(false)
@@ -82,7 +83,7 @@ export default function TextTab({ status, addToast }) {
 
   return (
     <div className="tab-panel">
-      <div className="tab-title">Send Text</div>
+      <div className="tab-title">Text</div>
 
       <div className="card">
         <div className="card-label">Message</div>
@@ -98,6 +99,15 @@ export default function TextTab({ status, addToast }) {
         <div className="text-meta">
           <span>{lineCount} line{lineCount !== 1 ? 's' : ''} · {charCount} / {MAX_CHARS} chars</span>
           <span style={{ fontSize: 11, color: 'var(--muted)' }}>⌘↵ to send</span>
+        </div>
+
+        <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginTop: 10, marginBottom: 10 }}>
+          <span className="compose-ctrl-label" style={{ minWidth: 70 }}>Disparity</span>
+          <input type="range" className="param-slider" min={1} max={20} step={1} value={maxDisparity}
+            onChange={e => setMaxDisparity(parseInt(e.target.value, 10))} />
+          <span className="compose-ctrl-val" style={{ minWidth: 28 }} title="Stereo depth range (1-20)">
+            {maxDisparity}
+          </span>
         </div>
 
         <div className="btn-row">

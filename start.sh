@@ -13,25 +13,21 @@ fi
 # ── 2. Python venv — prefer .venv, fall back to venv ─────────────────────────
 if [ -x "$ROOT/.venv/bin/python3" ]; then
   PYTHON="$ROOT/.venv/bin/python3"
-  PIP="$ROOT/.venv/bin/pip"
 elif [ -x "$ROOT/venv/bin/python3" ]; then
   PYTHON="$ROOT/venv/bin/python3"
-  PIP="$ROOT/venv/bin/pip"
 else
   echo "No venv found — creating one at $ROOT/.venv"
   python3 -m venv "$ROOT/.venv"
   PYTHON="$ROOT/.venv/bin/python3"
-  PIP="$ROOT/.venv/bin/pip"
 fi
 
 # ── 3. Install / sync Python dependencies ────────────────────────────────────
 echo "Syncing Python dependencies..."
-"$PIP" install --quiet -r "$ROOT/requirements.txt"
+"$PYTHON" -m pip install --quiet -r "$ROOT/requirements.txt"
 
 # ── 4. Start the Python backend in the background ────────────────────────────
-UVICORN="$(dirname "$PYTHON")/uvicorn"
 echo "Starting Python backend..."
-"$UVICORN" api:app --host 127.0.0.1 --port 8000 \
+"$PYTHON" -m uvicorn api_v3:app --host 127.0.0.1 --port 8000 \
   --app-dir "$ROOT" --log-level warning &
 BACKEND_PID=$!
 

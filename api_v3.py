@@ -6,11 +6,14 @@ This file: FastAPI endpoints only.
 """
 
 import asyncio
+import base64
 import json
 import logging
 import uvicorn
+from datetime import datetime
+from pathlib import Path
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, UploadFile, File
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
@@ -23,6 +26,7 @@ from protocol.connect import (
     stereo_pair,
     send_bmp_to_glass,
 )
+from protocol.bmp import compose_text_blocks
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -95,25 +99,58 @@ async def _on_glass_event(glass, sender, data: bytes) -> None:
 
 # ── Pydantic Models ───────────────────────────────────────────────────────────
 
-class TextBlock(BaseModel):
+class TextPayload(BaseModel):
     text: str
-    position: str = "bottom-left"
-    size: int = 14
-    color: str = "light"
-    padding: int = 14
-    z: int = 0
-
-
-class ImageLayer(BaseModel):
-    imageData: str
-    position: str = "middle-center"
-    z: float = 1
 
 
 class ComposePayload(BaseModel):
-    backgroundData: str = ""
-    blocks: list[TextBlock] = []
-    imageLayers: list[ImageLayer] = []
+    layers: list[dict] = []
+
+
+class SaveLayoutPayload(BaseModel):
+    name: str
+    layers: list[dict] = []
+
+
+class Render3DPayload(BaseModel):
+    offsetX: float = 0.0  # Translation X (pixels)
+    offsetY: float = 0.0  # Translation Y (pixels)
+    z: float = 0.0       # Stereo z-depth
+    fov: float = 60.0
+    distance: float = 300.0
+
+
+MAX_DISPARITY = 10
+LAYOUTS_FILE = Path(__file__).parent / "layouts.json"
+MODELS_DIR = Path(__file__).parent / "models"
+MODELS_DIR.mkdir(exist_ok=True)
+
+
+# ── Layout Storage ────────────────────────────────────────────────────────────
+
+def _load_layouts() -> list[dict]:
+    """Load all saved layouts from disk."""
+    if not LAYOUTS_FILE.exists():
+        return []
+    try:
+        with open(LAYOUTS_FILE) as f:
+            return json.load(f)
+    except Exception:
+        return []
+
+
+def _save_layouts(layouts: list[dict]) -> None:
+    """Save layouts to disk."""
+    with open(LAYOUTS_FILE, 'w') as f:
+        json.dump(layouts, f, indent=2)
+
+
+def _get_layout_by_id(layout_id: str) -> dict | None:
+    """Get a single layout by ID."""
+    for layout in _load_layouts():
+        if layout.get("id") == layout_id:
+            return layout
+    return None
 
 
 # ── API Endpoints ──────────────────────────────────────────────────────────────
@@ -129,6 +166,202 @@ async def disconnect():
     """Disconnect from all glasses."""
     await manager.disconnect_all()
     return {"connected": False}
+
+
+@app.post("/api/sync-time")
+async def sync_time_endpoint():
+    """Sync system time to connected glasses."""
+    if not manager.left_glass and not manager.right_glass:
+        raise HTTPException(status_code=503, detail="Not connected to glasses")
+    try:
+        await manager.sync_time()
+        return {"status": "time synced"}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/layouts")
+async def list_layouts():
+    """Get all saved composition layouts."""
+    layouts = _load_layouts()
+    return {"layouts": layouts}
+
+
+@app.post("/api/layouts")
+async def save_layout(payload: SaveLayoutPayload):
+    """Save a new composition layout."""
+    if not payload.name.strip():
+        raise HTTPException(status_code=400, detail="Layout name required")
+
+    layouts = _load_layouts()
+    layout_id = datetime.now().isoformat()
+    new_layout = {
+        "id": layout_id,
+        "name": payload.name,
+        "layers": payload.layers,
+        "created": layout_id,
+    }
+    layouts.append(new_layout)
+    _save_layouts(layouts)
+    return {"id": layout_id, "name": payload.name}
+
+
+@app.get("/api/layouts/{layout_id}")
+async def get_layout(layout_id: str):
+    """Load a specific layout by ID."""
+    layout = _get_layout_by_id(layout_id)
+    if not layout:
+        raise HTTPException(status_code=404, detail="Layout not found")
+    return layout
+
+
+@app.delete("/api/layouts/{layout_id}")
+async def delete_layout(layout_id: str):
+    """Delete a layout by ID."""
+    layouts = _load_layouts()
+    filtered = [l for l in layouts if l.get("id") != layout_id]
+    if len(filtered) == len(layouts):
+        raise HTTPException(status_code=404, detail="Layout not found")
+    _save_layouts(filtered)
+    return {"status": "deleted"}
+
+
+# ── 3D Model Management ────────────────────────────────────────────────────────
+
+@app.get("/api/models")
+async def list_models():
+    """List all uploaded 3D OBJ models."""
+    if not MODELS_DIR.exists():
+        return {"models": []}
+
+    models = []
+    for obj_file in MODELS_DIR.glob("*.obj"):
+        models.append({
+            "id": obj_file.stem,
+            "name": obj_file.stem,
+            "size": obj_file.stat().st_size,
+        })
+    return {"models": models}
+
+
+@app.post("/api/models")
+async def upload_model(file: UploadFile = File(...)):
+    """Upload a 3D OBJ model file."""
+    if not file.filename.endswith(".obj"):
+        raise HTTPException(status_code=400, detail="OBJ files only")
+
+    try:
+        from protocol.obj3d import load_obj_bytes
+
+        obj_bytes = await file.read()
+        model = load_obj_bytes(obj_bytes)
+
+        # Save to disk
+        model_path = MODELS_DIR / file.filename
+        with open(model_path, "wb") as f:
+            f.write(obj_bytes)
+
+        return {
+            "id": model_path.stem,
+            "name": file.filename,
+            "vertices": len(model.vertices),
+            "edges": len(model.edges),
+        }
+    except Exception as e:
+        logger.exception("Model upload error")
+        raise HTTPException(status_code=400, detail=f"Invalid OBJ: {str(e)}")
+
+
+@app.post("/api/models/{model_id}/preview")
+async def preview_3d_model(model_id: str, payload: Render3DPayload):
+    """Render 3D model to preview (left/right stereo pair)."""
+    try:
+        from protocol.obj3d import load_obj_bytes, render_wireframe
+        from protocol.bmp import compose_layers, compute_depth
+
+        model_path = MODELS_DIR / f"{model_id}.obj"
+        if not model_path.exists():
+            raise HTTPException(status_code=404, detail="Model not found")
+
+        with open(model_path, "rb") as f:
+            obj_bytes = f.read()
+
+        model = load_obj_bytes(obj_bytes)
+        # Fixed view angle: 20° top-down perspective
+        # Apply offset to auto-centered position
+        position = (288 + payload.offsetX, 68 + payload.offsetY)
+        bmp = render_wireframe(
+            model,
+            rotation=(20, 0, 0),  # Fixed: top-down 3D view
+            position=position,
+            scale=None,           # Auto-scale to fit
+            z_depth=payload.z,
+            fov=payload.fov,
+            distance=payload.distance,
+        )
+
+        # Apply stereo depth
+        left_layers, right_layers = compute_depth([(bmp, (payload.z + 5) / 10.0)], MAX_DISPARITY)
+        left_bmp = compose_layers(left_layers)
+        right_bmp = compose_layers(right_layers)
+
+        left_b64 = base64.b64encode(left_bmp).decode('utf-8')
+        right_b64 = base64.b64encode(right_bmp).decode('utf-8')
+
+        return {
+            "left": f"data:image/bmp;base64,{left_b64}",
+            "right": f"data:image/bmp;base64,{right_b64}",
+        }
+    except Exception as e:
+        logger.exception("3D preview error")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/api/models/{model_id}/send")
+async def send_3d_model(model_id: str, payload: Render3DPayload):
+    """Render and send 3D model to glasses."""
+    if not manager.left_glass and not manager.right_glass:
+        raise HTTPException(status_code=503, detail="Not connected to glasses")
+
+    try:
+        from protocol.obj3d import load_obj_bytes, render_wireframe
+        from protocol.bmp import compose_layers, compute_depth
+
+        model_path = MODELS_DIR / f"{model_id}.obj"
+        if not model_path.exists():
+            raise HTTPException(status_code=404, detail="Model not found")
+
+        with open(model_path, "rb") as f:
+            obj_bytes = f.read()
+
+        model = load_obj_bytes(obj_bytes)
+        # Fixed view angle: 20° top-down perspective
+        # Apply offset to auto-centered position
+        position = (288 + payload.offsetX, 68 + payload.offsetY)
+        bmp = render_wireframe(
+            model,
+            rotation=(20, 0, 0),  # Fixed: top-down 3D view
+            position=position,
+            scale=None,           # Auto-scale to fit
+            z_depth=payload.z,
+            fov=payload.fov,
+            distance=payload.distance,
+        )
+
+        # Apply stereo depth
+        left_layers, right_layers = compute_depth([(bmp, (payload.z + 5) / 10.0)], MAX_DISPARITY)
+        left_bmp = compose_layers(left_layers)
+        right_bmp = compose_layers(right_layers)
+
+        left_ok, right_ok = await asyncio.gather(
+            send_bmp_to_glass(manager.left_glass, left_bmp),
+            send_bmp_to_glass(manager.right_glass, right_bmp),
+        )
+
+        return {"method": "3d_model", "left": left_ok, "right": right_ok}
+    except Exception as e:
+        logger.exception("3D send error")
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 @app.get("/api/events/stream")
@@ -244,14 +477,146 @@ async def connect_stream():
 
 
 @app.post("/api/send-text")
-async def send_text_endpoint(text: str):
+async def send_text_endpoint(payload: TextPayload):
     """Send text in manual-page mode (tap to advance)."""
     if not manager.left_glass and not manager.right_glass:
         raise HTTPException(status_code=503, detail="Not connected to glasses")
     try:
-        await send_text(manager, text)
+        await send_text(manager, payload.text)
         return {"status": "sent"}
     except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/api/preview-compose")
+async def preview_compose(payload: ComposePayload):
+    """
+    Preview composition without sending to glasses.
+    Returns base64-encoded left and right eye stereo BMPs.
+    """
+    try:
+        from protocol.bmp import render_text_block, compose_layers, compute_depth, to_bmp_bytes
+        import base64
+
+        if not payload.layers:
+            raise ValueError("No layers to compose")
+
+        layers = []
+        for layer in payload.layers:
+            bmp = None
+
+            if layer.get("type") == "text":
+                text = layer.get("text", "").strip()
+                if text:
+                    bmp = render_text_block(
+                        text,
+                        position=layer.get("position", "bottom-left"),
+                        size=layer.get("size", 14),
+                        padding=layer.get("padding", 14)
+                    )
+            elif layer.get("type") == "image":
+                image_data = layer.get("imageData")
+                if image_data:
+                    try:
+                        image_bytes = base64.b64decode(image_data)
+                        bmp = to_bmp_bytes(image_bytes)
+                    except Exception as e:
+                        logger.error(f"Failed to decode image layer: {e}")
+                        continue
+
+            if bmp:
+                z_norm = (layer.get("z", 0) + 5) / 10.0
+                layers.append((bmp, z_norm))
+
+        if not layers:
+            raise ValueError("No valid text or image layers to compose")
+
+        left_layers, right_layers = compute_depth(layers, MAX_DISPARITY)
+        left_bmp = compose_layers(left_layers)
+        right_bmp = compose_layers(right_layers)
+
+        left_b64 = base64.b64encode(left_bmp).decode('utf-8')
+        right_b64 = base64.b64encode(right_bmp).decode('utf-8')
+
+        return {
+            "left": f"data:image/bmp;base64,{left_b64}",
+            "right": f"data:image/bmp;base64,{right_b64}",
+            "layers": len(layers)
+        }
+    except Exception as e:
+        logger.exception("Preview error")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/api/send-compose")
+async def send_compose(payload: ComposePayload):
+    """
+    Unified composition pipeline: all layers (text + image) through same processing.
+    Pipeline: Load bytes → Threshold to mono → Composite with depth → Send stereo pair.
+    """
+    if not manager.left_glass and not manager.right_glass:
+        raise HTTPException(status_code=503, detail="Not connected to glasses")
+
+    try:
+        from protocol.bmp import render_text_block, compose_layers, compute_depth, to_bmp_bytes
+        import base64
+
+        if not payload.layers:
+            raise ValueError("No layers to compose")
+
+        is_simple_text = (
+            len(payload.layers) == 1 and
+            payload.layers[0].get("type") == "text" and
+            payload.layers[0].get("position") == "bottom-left" and
+            payload.layers[0].get("z") == 0
+        )
+
+        if is_simple_text:
+            await send_text(manager, payload.layers[0]["text"])
+            return {"method": "native_text", "layers": 1}
+
+        layers = []
+        for layer in payload.layers:
+            bmp = None
+
+            if layer.get("type") == "text":
+                text = layer.get("text", "").strip()
+                if text:
+                    bmp = render_text_block(
+                        text,
+                        position=layer.get("position", "bottom-left"),
+                        size=layer.get("size", 14),
+                        padding=layer.get("padding", 14)
+                    )
+            elif layer.get("type") == "image":
+                image_data = layer.get("imageData")
+                if image_data:
+                    try:
+                        image_bytes = base64.b64decode(image_data)
+                        bmp = to_bmp_bytes(image_bytes)
+                    except Exception as e:
+                        logger.error(f"Failed to decode image layer: {e}")
+                        continue
+
+            if bmp:
+                z_norm = (layer.get("z", 0) + 5) / 10.0
+                layers.append((bmp, z_norm))
+
+        if not layers:
+            raise ValueError("No valid text or image layers to compose")
+
+        left_layers, right_layers = compute_depth(layers, MAX_DISPARITY)
+        left_bmp = compose_layers(left_layers)
+        right_bmp = compose_layers(right_layers)
+
+        left_ok, right_ok = await asyncio.gather(
+            send_bmp_to_glass(manager.left_glass, left_bmp),
+            send_bmp_to_glass(manager.right_glass, right_bmp),
+        )
+
+        return {"method": "stereo_bmp", "left": left_ok, "right": right_ok, "layers": len(layers)}
+    except Exception as e:
+        logger.exception("Compose error")
         raise HTTPException(status_code=500, detail=str(e))
 
 

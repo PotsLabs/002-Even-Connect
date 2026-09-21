@@ -14,26 +14,23 @@ echo "==> KiroshiOS production build"
 # ── 2. Python venv ───────────────────────────────────────────────────────────
 if [ -x "$ROOT/.venv/bin/python3" ]; then
   PYTHON="$ROOT/.venv/bin/python3"
-  PIP="$ROOT/.venv/bin/pip"
 elif [ -x "$ROOT/venv/bin/python3" ]; then
   PYTHON="$ROOT/venv/bin/python3"
-  PIP="$ROOT/venv/bin/pip"
 else
   echo "No venv found — creating one at $ROOT/.venv"
   python3 -m venv "$ROOT/.venv"
   PYTHON="$ROOT/.venv/bin/python3"
-  PIP="$ROOT/.venv/bin/pip"
 fi
 
 # ── 3. Python dependencies ────────────────────────────────────────────────────
 echo "--> Installing Python dependencies..."
-"$PIP" install --quiet -r "$ROOT/requirements.txt"
-"$PIP" install --quiet pyinstaller
+"$PYTHON" -m pip install --quiet -r "$ROOT/requirements.txt"
+"$PYTHON" -m pip install --quiet pyinstaller
 
 # ── 4. Build backend sidecar with PyInstaller ─────────────────────────────────
 echo "--> Building Python backend sidecar (this takes ~5 min first run)..."
 cd "$ROOT"
-"$ROOT/.venv/bin/pyinstaller" \
+"$PYTHON" -m PyInstaller \
   api.spec \
   --distpath "$ROOT/.build/dist_backend" \
   --workpath "$ROOT/.build/work_backend" \

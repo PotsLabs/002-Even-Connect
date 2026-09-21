@@ -244,9 +244,29 @@ End of day/week: total spent, budget vs actual, tied back to financial goals doc
 - ✅ Android app: Fully standalone (no laptop required)
 - ✅ Deferred: Preview endpoints (can add back later)
 
+**API Endpoints — Active in api_v3.py:**
+- `GET /api/status` — connection state
+- `POST /api/disconnect` — close BLE connection
+- `GET /api/events/stream` — SSE for tap/wear events
+- `POST /api/connect-stream` — SSE scan + connect with logging
+- `POST /api/send-text` — paginated text to glasses
+- `POST /api/preview-compose` — ✨ NEW stereo BMP preview (no send)
+- `POST /api/send-compose` — ✨ NEW unified composition (text + image layers)
+- `POST /api/send-stereo-compose` — stereo image pair with z-depth
+
+**Removed in v2→v3 Rewrite** (intentional, focus on M0 core):
+- Frame cache (`/queue/*`, `/send-precomputed/*`) — optimization removed
+- Obsidian REST proxy (`/obsidian/*`) — use `integrations/obsidian.py` module instead
+
+**Re-added post-M0 (2026-06-09)**:
+- ✅ `/api/preview-compose` — unified text + image composition preview
+- ✅ `/api/send-compose` — unified text + image composition send
+- These replace v2's separate text/background pipelines with single unified flow
+
 **Known Issues (low severity):**
-- `leftName`/`rightName` camelCase mismatch (cosmetic)
-- Preview endpoints not yet wired (nice-to-have)
+- `leftName`/`rightName` camelCase mismatch (cosmetic, frontend-side fix)
+- Frontend api.js updated to match api_v3.py endpoints
+- start.sh updated to run `api_v3:app` instead of `api:app`
 
 ---
 
@@ -339,7 +359,7 @@ Custom   ┘
 
 ---
 
-## Frontend QoL (Complete — as of 2026-05-30)
+## Frontend QoL (Complete — as of 2026-06-09)
 
 | Task | Status |
 |------|--------|
@@ -349,6 +369,9 @@ Custom   ┘
 | Text + Compose unified into Send tab | ✅ |
 | Stereo: default max disparity → 10 | ✅ |
 | Per-layer z-depth control (−5 → +5) | ✅ |
+| **NEW:** Unified Compose tab with text + image layers | ✅ |
+| **NEW:** Preview renders left/right stereo pair before send | ✅ |
+| **NEW:** Layer-by-layer depth control in UI | ✅ |
 
 ---
 
@@ -380,11 +403,12 @@ Custom   ┘
 
 ## Deferred / Nice-to-Have
 
-### Preview Endpoints
-- `/api/preview-bmp` — show 1-bit BMP preview
-- `/api/preview-stereo-compose` — show left/right pair before send
-- **Why deferred:** Not core; can be added once pipeline is stable
-- **How:** Simple endpoints returning PNG data URIs
+### Preview Endpoints — ✅ IMPLEMENTED (2026-06-09)
+- ✅ `/api/preview-compose` — show left/right stereo BMP pair before send
+  - Unified pipeline: processes text + image layers identically to send-compose
+  - Frontend UI shows stereo pair side-by-side with left/right labels
+  - Allows debugging image quality issues before sending to glasses
+- Deferred: `/api/preview-bmp` (single eye BMP preview, lower priority)
 
 ---
 

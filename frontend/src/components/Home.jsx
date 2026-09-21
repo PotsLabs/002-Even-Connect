@@ -87,6 +87,20 @@ export default function Home({ status, onStatusChange, addToast, addLog, logs, c
     }
   }
 
+  const handleSyncTime = async () => {
+    setBusy(true)
+    try {
+      await api.syncTime()
+      addToast('Time synced to glasses', 'success')
+      addLog('INFO:sync:Time synced to glasses')
+    } catch (err) {
+      addToast(err.message, 'error')
+      addLog(`ERROR:sync:${err.message}`)
+    } finally {
+      setBusy(false)
+    }
+  }
+
   const dotClass = scanning ? 'pulse' : status.connected ? 'on' : 'off'
   const statusText = scanning
     ? 'Scanning for glasses…'
@@ -138,13 +152,23 @@ export default function Home({ status, onStatusChange, addToast, addLog, logs, c
             {scanning ? 'Scanning…' : 'Connect to Glasses'}
           </button>
         ) : (
-          <button
-            className="btn btn-danger"
-            onClick={handleDisconnect}
-            disabled={busy}
-          >
-            Disconnect
-          </button>
+          <>
+            <button
+              className="btn btn-ghost btn-sm"
+              onClick={handleSyncTime}
+              disabled={busy}
+              title="Sync system time to glasses"
+            >
+              ⏱ Sync Time
+            </button>
+            <button
+              className="btn btn-danger"
+              onClick={handleDisconnect}
+              disabled={busy}
+            >
+              Disconnect
+            </button>
+          </>
         )}
         {logs.length > 0 && !scanning && (
           <button className="btn btn-ghost btn-sm" onClick={clearLogs}>

@@ -2,14 +2,16 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import './App.css'
 import { api } from './api'
 import Home from './components/Home'
-import ImageTab from './components/ImageTab'
+import TextTab from './components/TextTab'
+import ComposeTab from './components/ComposeTab'
+import Models3D from './components/Models3D'
 import ObsidianTab from './components/ObsidianTab'
-import SendTab from './components/SendTab'
 
 const TABS = [
   { id: 'home',     label: 'Home',     icon: <IconHome /> },
-  { id: 'image',    label: 'Image',    icon: <IconImage /> },
-  { id: 'send',     label: 'Send',     icon: <IconSend /> },
+  { id: 'text',     label: 'Text',     icon: <IconText /> },
+  { id: 'compose',  label: 'Compose',  icon: <IconCompose /> },
+  { id: 'models',   label: '3D',       icon: <Icon3D /> },
   { id: 'obsidian', label: 'Obsidian', icon: <IconObsidian /> },
 ]
 
@@ -79,19 +81,9 @@ export default function App() {
       {/* Main */}
       <main className="main">
         {tab === 'home' && <Home {...sharedProps} onStatusChange={setStatus} logs={logs} clearLogs={clearLogs} />}
-
-        {/* Image tab: lazy-mount then keep alive so queue state survives tab switches */}
-        {visited.has('image') && (
-          <div style={{ display: tab === 'image' ? 'contents' : 'none' }}>
-            <ImageTab {...sharedProps} />
-          </div>
-        )}
-
-        {visited.has('send') && (
-          <div style={{ display: tab === 'send' ? 'contents' : 'none' }}>
-            <SendTab {...sharedProps} />
-          </div>
-        )}
+        {tab === 'text' && <TextTab {...sharedProps} />}
+        {tab === 'compose' && <ComposeTab {...sharedProps} />}
+        {tab === 'models' && <Models3D {...sharedProps} />}
         {tab === 'obsidian' && <ObsidianTab {...sharedProps} />}
       </main>
 
@@ -114,21 +106,30 @@ function IconHome() {
   )
 }
 
-function IconImage() {
+function IconText() {
   return (
     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-      <rect x="3" y="3" width="18" height="18" rx="2" />
-      <circle cx="8.5" cy="8.5" r="1.5" />
-      <polyline points="21 15 16 10 5 21" />
+      <path d="M4 7h16" />
+      <path d="M4 12h16" />
+      <path d="M4 17h10" />
     </svg>
   )
 }
 
-function IconSend() {
+function IconCompose() {
   return (
     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-      <line x1="22" y1="2" x2="11" y2="13" />
-      <polygon points="22 2 15 22 11 13 2 9 22 2" />
+      <polyline points="23 6 20 3 3 20 3 23 6 23 23 6" />
+    </svg>
+  )
+}
+
+function Icon3D() {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M12 2L2 7l10 5 10-5-10-5z" />
+      <path d="M2 17l10 5 10-5" />
+      <path d="M2 12l10 5 10-5" />
     </svg>
   )
 }

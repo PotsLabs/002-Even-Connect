@@ -30,38 +30,38 @@ const SEND = 30_000  // single BLE image send
 const STEREO = 60_000 // stereo = two full images over BLE
 
 export const api = {
-  status:       ()       => request('/status',       {},                                                             FAST),
-  connect:      ()       => request('/connect',      { method: 'POST' }),
-  disconnect:   ()       => request('/disconnect',   { method: 'POST' }),
-  sendText:     (text)   => request('/send-text',    { method: 'POST', body: JSON.stringify({ text }) },            SEND),
+  // Core endpoints (api_v3.py)
+  status:            ()                                                                    => request('/status',               {},                                                           FAST),
+  connectStream:     ()                                                                    => request('/connect-stream',       { method: 'POST' }),
+  disconnect:        ()                                                                    => request('/disconnect',           { method: 'POST' }),
+  syncTime:          ()                                                                    => request('/sync-time',            { method: 'POST' },                                           FAST),
+  eventsStream:      ()                                                                    => request('/events/stream',        {}),
 
-  sendImage:        (b64)          => request('/send-image',        { method: 'POST', body: JSON.stringify({ imageData: b64 }) },                   SEND),
-  previewBmp:       (b64)          => request('/preview-bmp',       { method: 'POST', body: JSON.stringify({ imageData: b64 }) }),
-  sendStereoImage:  (b64, params)  => request('/send-stereo-image', { method: 'POST', body: JSON.stringify({ imageData: b64, ...params }) },        STEREO),
-  previewStereoBmp: (b64, params)  => request('/preview-stereo-bmp',{ method: 'POST', body: JSON.stringify({ imageData: b64, ...params }) }),
+  // Send endpoints
+  sendText:          (text)                                                                => request('/send-text',            { method: 'POST', body: JSON.stringify({ text }) },                      SEND),
+  previewCompose:    (payload)                                                             => request('/preview-compose',      { method: 'POST', body: JSON.stringify(payload) },                        SEND),
+  sendCompose:       (payload)                                                             => request('/send-compose',         { method: 'POST', body: JSON.stringify(payload) },                        STEREO),
+  sendStereoPair:    (layers, maxDisparity = 10)                                           => request('/send-stereo-compose',  { method: 'POST', body: JSON.stringify({ layers, maxDisparity }) },       STEREO),
 
-  // Precomputed frame cache
-  precompute:       (images)  => request('/queue/precompute',          { method: 'POST', body: JSON.stringify({ images }) },     STEREO),
-  sendPrecomputed:  (id)      => request(`/send-precomputed/${id}`,    { method: 'POST' },                                       SEND),
-  deletePrecomputed:(id)      => request(`/queue/precomputed/${id}`,   { method: 'DELETE' }),
+  // Layout endpoints
+  listLayouts:       ()                                                                    => request('/layouts',              {},                                                           FAST),
+  saveLayout:        (name, layers)                                                        => request('/layouts',              { method: 'POST', body: JSON.stringify({ name, layers }) },               FAST),
+  getLayout:         (layoutId)                                                            => request(`/layouts/${layoutId}`,  {},                                                           FAST),
+  deleteLayout:      (layoutId)                                                            => request(`/layouts/${layoutId}`,  { method: 'DELETE' },                                         FAST),
 
-  // Compose (background + image layers + text layers)
-  previewCompose:       (backgroundData, blocks, imageLayers = [])                          => request('/preview-compose',        { method: 'POST', body: JSON.stringify({ backgroundData, blocks, imageLayers }) }),
-  sendCompose:          (backgroundData, blocks, imageLayers = [])                          => request('/send-compose',           { method: 'POST', body: JSON.stringify({ backgroundData, blocks, imageLayers }) },          SEND),
-  precomputeCompose:    (backgroundData, blocks, imageLayers = [])                          => request('/precompute-compose',     { method: 'POST', body: JSON.stringify({ backgroundData, blocks, imageLayers }) },          STEREO),
-  previewStereoCompose: (backgroundData, backgroundZ = 0, blocks, imageLayers = [], maxDisparity = 10) => request('/preview-stereo-compose', { method: 'POST', body: JSON.stringify({ backgroundData, backgroundZ, blocks, imageLayers, maxDisparity }) }),
-  sendStereoCompose:    (backgroundData, backgroundZ = 0, blocks, imageLayers = [], maxDisparity = 10) => request('/send-stereo-compose',    { method: 'POST', body: JSON.stringify({ backgroundData, backgroundZ, blocks, imageLayers, maxDisparity }) }, STEREO),
+  // 3D model endpoints
+  listModels:        ()                                                                    => request('/models',               {},                                                           FAST),
+  preview3DModel:    (modelId, payload)                                                    => request(`/models/${modelId}/preview`, { method: 'POST', body: JSON.stringify(payload) },         SEND),
+  send3DModel:       (modelId, payload)                                                    => request(`/models/${modelId}/send`,    { method: 'POST', body: JSON.stringify(payload) },         STEREO),
 
-  // Obsidian Local REST API proxy
-  obsidian: {
-    getConfig:    ()                     => request('/obsidian/config'),
-    setConfig:    (url, api_key)         => request('/obsidian/config',           { method: 'POST', body: JSON.stringify({ url, api_key }) }),
-    ping:         ()                     => request('/obsidian/ping'),
-    listFiles:    ()                     => request('/obsidian/files'),
-    getFile:      (path)                 => request(`/obsidian/file/${path}`),
-    writeFile:    (path, content)        => request(`/obsidian/file/${path}`,     { method: 'PUT',    body: JSON.stringify({ content }) }),
-    appendFile:   (path, content)        => request(`/obsidian/file/${path}/append`, { method: 'POST', body: JSON.stringify({ content }) }),
-    deleteFile:   (path)                 => request(`/obsidian/file/${path}`,     { method: 'DELETE' }),
-    search:       (query)                => request('/obsidian/search',           { method: 'POST', body: JSON.stringify({ query }) }),
-  },
+  // ────── DEFERRED (M0.5 → Preview endpoints) ──────────────────────────────
+  // previewBmp: show 1-bit BMP preview before send
+  // previewStereoPair: show left/right stereo pair before send
+  // See: KIROSHI_OS_SPEC.md § "Deferred / Nice-to-Have"
+
+  // ────── REMOVED (v2 → v3 rewrite) ─────────────────────────────────────────
+  // Frame cache optimization: precompute, sendPrecomputed, deletePrecomputed
+  // Text composition: previewCompose, sendCompose, precomputeCompose
+  // Obsidian proxy: obsidian.* endpoints (use integrations/obsidian.py instead)
+  // See: KIROSHI_OS_SPEC.md § "M0 — Known Issues"
 }

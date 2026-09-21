@@ -7,7 +7,11 @@ Sources:
   - eveng1_python_sdk/services/display.py
 """
 
+import struct
 import zlib
+from datetime import datetime, timedelta
+from typing import Optional
+
 from .constants import (
     Cmd, DisplayStatus, ScreenAction, MicState, SilentMode,
     DashboardMode, DashboardPosition, TranslateLang,
@@ -30,6 +34,48 @@ def build_heartbeat() -> bytes:
 def build_exit_all() -> bytes:
     """[0x18] — exit all active functions and return to dashboard/idle."""
     return bytes([Cmd.EXIT_ALL])
+
+
+# ── Dashboard clock ────────────────────────────────────────────────────────────
+# The 0x4D init packet carries a broken-out date but does NOT drive the dashboard
+# clock — glasses that only ever receive it sit at 01/01 00:00. The real command
+# is 0x06 0x15, confirmed against g1-sample G1Controller.updateDashboardTime()
+# and documented in its CAPABILITIES.md.
+
+def build_dashboard_time(
+    when: Optional[datetime] = None,
+    weather_code: int = 0x00,
+    temp_celsius: float = 0.0,
+    fahrenheit: bool = False,
+    use_24h: bool = True,
+) -> bytes:
+    """
+    [0x06, 0x15, 0x00, 0x15, 0x01, ts32 LE, ts64 LE (ms), weather, temp, unit, fmt]
+
+    21 bytes, matching the declared length of 0x15.
+
+    The firmware renders the timestamp as wall-clock without applying a timezone,
+    so the local UTC offset is folded into the value. Sending a true UTC epoch
+    displays the wrong hour by exactly your offset — the single easiest thing to
+    get wrong here.
+
+    `weather_code` 0x00 leaves the weather widget blank.
+    `temp_celsius` is always sent in °C, `fahrenheit` only flips the display unit.
+    """
+    when = when or datetime.now().astimezone()
+    offset = when.utcoffset() or timedelta(0)
+    local = int(when.timestamp() + offset.total_seconds())
+
+    packet = bytearray([Cmd.DASHBOARD_SHOW, 0x15, 0x00, 0x15, 0x01])
+    packet += struct.pack("<I", local & 0xFFFFFFFF)      # seconds
+    packet += struct.pack("<Q", local * 1000)            # milliseconds
+    packet += bytes([
+        weather_code & 0xFF,
+        int(round(temp_celsius)) & 0xFF,                 # signed byte, two's complement
+        0x01 if fahrenheit else 0x00,
+        0x00 if use_24h else 0x01,
+    ])
+    return bytes(packet)
 
 
 # ── Text display ───────────────────────────────────────────────────────────────

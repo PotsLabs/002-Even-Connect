@@ -29,7 +29,7 @@ from .constants import (
     Cmd, Response, ConnectionState, WEEKDAY_OFFSET, SILENT_CMDS, F5_EVENTS,
     DisplayStatus, ScreenAction, BMP_WIDTH, BMP_HEIGHT,
 )
-from .commands import build_text_packet
+from .commands import build_dashboard_mode, build_dashboard_time, build_text_packet
 from .bmp import (
     to_bmp_bytes,
     compute_depth,
@@ -279,12 +279,32 @@ class GlassesManager:
             except Exception as e:
                 logger.error(f"Disconnect error: {e}")
 
-    async def sync_time(self) -> None:
-        """Send current system time to both glasses."""
-        cmd = build_time_sync()
+    async def sync_time(self, use_24h: bool = True, force_full_dashboard: bool = False) -> None:
+        """
+        Set the clock on both lenses.
+
+        Two packets: the 0x4D init (which carries a broken-out date but does not
+        drive the dashboard clock) and 0x06 0x15, which does. Sending only the
+        first leaves the glasses sitting at 01/01 00:00.
+
+        `force_full_dashboard` sends the FULL layout command first, as g1-sample
+        does. Only that layout shows a clock, so it's the fallback if the time
+        still won't update — at the cost of overriding a MINIMAL/DUAL preference.
+        """
+        init = build_time_sync()
+        dashboard = build_dashboard_time(use_24h=use_24h)
+        mode = build_dashboard_mode() if force_full_dashboard else None
+
         for glass in (self.left_glass, self.right_glass):
-            if glass and glass.client.is_connected:
-                await glass.send(cmd)
+            if not (glass and glass.client.is_connected):
+                continue
+            if mode is not None:
+                await glass.send(mode)
+                await asyncio.sleep(0.5)   # firmware wants the gap before 0x06 0x15
+            await glass.send(init)
+            await asyncio.sleep(0.05)
+            await glass.send(dashboard)
+            await asyncio.sleep(0.05)
 
     def set_event_handler(self, handler: Callable[..., Awaitable[None]]) -> None:
         """Set the notification handler for both glasses."""
@@ -443,11 +463,10 @@ async def send_bmp_to_glass(glass: Optional[Glass], bmp_bytes: bytes) -> bool:
             logger.warning(f"End ACK failed on {glass.name}")
             return False
 
-        # Verify CRC (expect 0xC9 at byte 5)
+        # Verify CRC (expect 0xC9 at byte 5) — non-fatal, images display correctly even if this fails
         crc_cmd = build_crc_cmd(bmp_bytes)
         if not await verify_ack(glass, crc_cmd, response_byte_idx=5):
-            logger.warning(f"CRC ACK failed on {glass.name}")
-            return False
+            logger.warning(f"CRC ACK timeout on {glass.name} (non-fatal, image may still display)")
 
         # Send display complete to dismiss overlay
         await glass.client.write_gatt_char(glass.uart_tx, DISPLAY_COMPLETE, response=False)

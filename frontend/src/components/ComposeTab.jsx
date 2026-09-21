@@ -1,4 +1,4 @@
-import { useRef, useState } from 'react'
+import { useRef, useState, useEffect } from 'react'
 import { api } from '../api'
 
 const POS_GRID = [
@@ -13,81 +13,161 @@ const POS_ARROW = {
 }
 
 let _id = 0
-const newBlock = () => ({
+const newTextLayer = () => ({
   id: ++_id,
+  type: 'text',
   text: '',
   position: 'bottom-left',
   size: 18,
-  color: 'light',
   padding: 6,
+  z: 0,
 })
 
-const toApiBlocks = (blocks) =>
-  blocks
-    .filter(b => b.text.trim())
-    .map(({ text, position, size, color, padding }) => ({ text, position, size, color, padding }))
+const newImageLayer = () => ({
+  id: ++_id,
+  type: 'image',
+  imageData: null,
+  position: 'middle-center',
+  z: 0,
+})
+
+const toApiLayers = (layers) =>
+  layers
+    .filter(l => {
+      if (l.type === 'text') return l.text?.trim()
+      if (l.type === 'image') return l.imageData
+      return false
+    })
+    .map(l => {
+      if (l.type === 'text') {
+        return { type: 'text', text: l.text, position: l.position, size: l.size, padding: l.padding, z: l.z }
+      } else {
+        const base64 = l.imageData.includes(',') ? l.imageData.split(',')[1] : l.imageData
+        return { type: 'image', imageData: base64, position: l.position, z: l.z }
+      }
+    })
 
 export default function ComposeTab({ status, addToast, addLog }) {
-  const [bg, setBg]           = useState(null)
-  const [blocks, setBlocks]   = useState([newBlock()])
+  const [layers, setLayers] = useState([newTextLayer()])
   const [preview, setPreview] = useState(null)
   const [previewing, setPreviewing] = useState(false)
   const [sending, setSending] = useState(false)
-  const [bgDrag, setBgDrag]   = useState(false)
-  const fileRef = useRef(null)
+  const [savedLayouts, setSavedLayouts] = useState([])
+  const [saveName, setSaveName] = useState('')
+  const [saving, setSaving] = useState(false)
 
-  const b64 = (url) => (url ? url.split(',')[1] : '')
+  useEffect(() => {
+    loadSavedLayouts()
+  }, [])
 
-  // ── Background ────────────────────────────────────────────────────────────
-
-  const loadBg = (file) => {
-    if (!file || !file.type.startsWith('image/')) { addToast('Image files only', 'error'); return }
-    const reader = new FileReader()
-    reader.onload = (e) => { setBg(e.target.result); setPreview(null) }
-    reader.readAsDataURL(file)
+  const loadSavedLayouts = async () => {
+    try {
+      const result = await api.listLayouts()
+      setSavedLayouts(result.layouts || [])
+    } catch (e) {
+      console.error('Failed to load layouts:', e)
+    }
   }
 
-  const onBgDrop = (e) => {
-    e.preventDefault(); setBgDrag(false)
-    loadBg(e.dataTransfer.files[0])
+  const handleSaveLayout = async () => {
+    if (!saveName.trim()) {
+      addToast('Enter a name for this layout', 'error')
+      return
+    }
+    setSaving(true)
+    try {
+      const payload = { layers: toApiLayers(layers) }
+      await api.saveLayout(saveName, payload.layers)
+      addToast(`Layout saved: ${saveName}`, 'success')
+      setSaveName('')
+      await loadSavedLayouts()
+    } catch (e) {
+      addToast(e.message, 'error')
+    } finally {
+      setSaving(false)
+    }
   }
 
-  // ── Blocks ────────────────────────────────────────────────────────────────
+  const handleLoadLayout = async (layoutId) => {
+    try {
+      const layout = await api.getLayout(layoutId)
+      const loadedLayers = layout.layers.map((l, idx) => ({
+        id: ++_id,
+        ...l
+      }))
+      setLayers(loadedLayers)
+      setPreview(null)
+      addToast(`Loaded: ${layout.name}`, 'success')
+    } catch (e) {
+      addToast(e.message, 'error')
+    }
+  }
 
-  const addBlock = () => setBlocks(bs => [...bs, newBlock()])
+  const handleDeleteLayout = async (layoutId, name) => {
+    if (!window.confirm(`Delete layout "${name}"?`)) return
+    try {
+      await api.deleteLayout(layoutId)
+      addToast(`Deleted: ${name}`, 'success')
+      await loadSavedLayouts()
+    } catch (e) {
+      addToast(e.message, 'error')
+    }
+  }
 
-  const updateBlock = (id, patch) => {
-    setBlocks(bs => bs.map(b => b.id === id ? { ...b, ...patch } : b))
+  // ── Layers (unified) ──────────────────────────────────────────────────────
+  const addTextLayer = () => setLayers(ls => [...ls, newTextLayer()])
+  const addImageLayer = () => setLayers(ls => [...ls, newImageLayer()])
+
+  const updateLayer = (id, patch) => {
+    setLayers(ls => ls.map(l => l.id === id ? { ...l, ...patch } : l))
     setPreview(null)
   }
 
-  const removeBlock = (id) => {
-    setBlocks(bs => bs.filter(b => b.id !== id))
+  const removeLayer = (id) => {
+    setLayers(ls => ls.filter(l => l.id !== id))
     setPreview(null)
   }
 
-  const moveBlock = (idx, dir) => {
-    setBlocks(bs => {
-      const next = [...bs]
+  const moveLayer = (idx, dir) => {
+    setLayers(ls => {
+      const next = [...ls]
       const to = idx + dir
-      if (to < 0 || to >= next.length) return bs
+      if (to < 0 || to >= next.length) return ls
       ;[next[idx], next[to]] = [next[to], next[idx]]
       return next
     })
     setPreview(null)
   }
 
-  // ── Actions ───────────────────────────────────────────────────────────────
+  const loadImageForLayer = (id, file) => {
+    if (!file?.type.startsWith('image/')) { addToast('Image files only', 'error'); return }
+    const reader = new FileReader()
+    reader.onload = (e) => updateLayer(id, { imageData: e.target.result })
+    reader.readAsDataURL(file)
+  }
 
+  // ── Actions ───────────────────────────────────────────────────────────────
   const handlePreview = async () => {
+    const validLayers = layers.filter(l => {
+      if (l.type === 'text') return l.text?.trim()
+      if (l.type === 'image') return l.imageData
+      return false
+    })
+
+    if (validLayers.length === 0) {
+      addToast('Add text or image layers to preview', 'error')
+      return
+    }
+
     setPreviewing(true)
-    setPreview(null)
     try {
-      const { preview: p } = await api.previewCompose(b64(bg), toApiBlocks(blocks))
-      setPreview(p)
+      const payload = { layers: toApiLayers(layers) }
+      const result = await api.previewCompose(payload)
+      setPreview(result)
+      addToast(`Preview rendered: ${result.layers} layers`, 'info')
     } catch (e) {
-      addToast(e.message, 'error')
-      addLog(`ERROR:compose:${e.message}`)
+      const errorMsg = e?.message || String(e) || 'Unknown error'
+      addToast(`Preview failed: ${errorMsg}`, 'error')
     } finally {
       setPreviewing(false)
     }
@@ -95,159 +175,244 @@ export default function ComposeTab({ status, addToast, addLog }) {
 
   const handleSend = async () => {
     if (!status.connected) { addToast('Glasses not connected', 'error'); return }
+
+    const validLayers = layers.filter(l => {
+      if (l.type === 'text') return l.text?.trim()
+      if (l.type === 'image') return l.imageData
+      return false
+    })
+
+    if (validLayers.length === 0) {
+      addToast('Add text or image layers to compose', 'error'); return
+    }
     setSending(true)
     const start = performance.now()
     try {
-      await api.sendCompose(b64(bg), toApiBlocks(blocks))
+      const payload = { layers: toApiLayers(layers) }
+      const response = await api.sendCompose(payload)
       const ms = Math.round(performance.now() - start)
       addToast(`Composed image sent (${ms}ms)`, 'success')
-      addLog(`INFO:compose:Sent — ${ms}ms`)
+      addLog(`INFO:compose:Sent ${response.layers} layers — ${ms}ms`)
     } catch (e) {
-      addToast(e.message, 'error')
-      addLog(`ERROR:compose:${e.message}`)
+      const errorMsg = e?.message || String(e) || 'Unknown error'
+      addToast(errorMsg, 'error')
+      addLog(`ERROR:compose:${errorMsg}`)
     } finally {
       setSending(false)
     }
   }
 
-  const handleAddToQueue = async (addToImageQueue) => {
-    try {
-      const { id, preview: thumb } = await api.precomputeCompose(b64(bg), toApiBlocks(blocks))
-      addToImageQueue({ id, original: thumb, mode: 'standard', stereo: {}, precomputed: 'ready' })
-      addToast('Composition added to queue', 'success')
-      addLog(`INFO:compose:Precomputed and queued (id ${id.slice(0, 8)}…)`)
-    } catch (e) {
-      addToast(e.message, 'error')
-      addLog(`ERROR:compose:${e.message}`)
-    }
-  }
-
   // ── Render ────────────────────────────────────────────────────────────────
-
   return (
     <div className="tab-panel">
       <div className="tab-title">Compose</div>
 
-      {/* Background */}
-      <div className="card">
-        <div className="card-label">Background Image (optional)</div>
-        {!bg ? (
-          <div
-            className={`compose-bg-drop ${bgDrag ? 'drag-over' : ''}`}
-            onDragOver={e => { e.preventDefault(); setBgDrag(true) }}
-            onDragLeave={() => setBgDrag(false)}
-            onDrop={onBgDrop}
-            onClick={() => fileRef.current?.click()}
-          >
-            <span>Drop or click to add a background — leave empty for solid black</span>
-            <input ref={fileRef} type="file" accept="image/*" style={{ display: 'none' }}
-              onChange={e => loadBg(e.target.files[0])} />
-          </div>
-        ) : (
-          <div className="compose-bg-preview">
-            <img src={bg} alt="Background" />
-            <button className="btn btn-ghost btn-sm compose-bg-clear"
-              onClick={() => { setBg(null); setPreview(null) }}>
-              Clear
-            </button>
-          </div>
-        )}
-      </div>
-
-      {/* Text layers */}
+      {/* Unified Layers */}
       <div className="card">
         <div className="compose-layers-header">
-          <span className="card-label" style={{ marginBottom: 0 }}>Text Layers</span>
-          <button className="btn btn-ghost btn-sm" onClick={addBlock}>+ Add Layer</button>
+          <span className="card-label" style={{ marginBottom: 0 }}>Layers</span>
+          <div style={{ display: 'flex', gap: 6 }}>
+            <button className="btn btn-ghost btn-sm" onClick={addTextLayer}>+ Text</button>
+            <button className="btn btn-ghost btn-sm" onClick={addImageLayer}>+ Image</button>
+          </div>
         </div>
 
-        {blocks.map((block, idx) => (
-          <div key={block.id} className="compose-block">
+        {layers.map((layer, idx) => (
+          <div key={layer.id} className="compose-block">
             <div className="compose-block-header">
-              <span className="compose-block-label">Layer {idx + 1}</span>
+              <span className="compose-block-label">
+                {layer.type === 'image' ? '🖼 ' : ''}Layer {idx + 1}
+              </span>
               <div className="compose-block-actions">
-                <button className="compose-reorder-btn" onClick={() => moveBlock(idx, -1)} disabled={idx === 0} title="Move up">↑</button>
-                <button className="compose-reorder-btn" onClick={() => moveBlock(idx, 1)} disabled={idx === blocks.length - 1} title="Move down">↓</button>
-                <button className="compose-reorder-btn compose-remove-btn" onClick={() => removeBlock(block.id)} title="Remove">✕</button>
+                <button className="compose-reorder-btn" onClick={() => moveLayer(idx, -1)} disabled={idx === 0}>↑</button>
+                <button className="compose-reorder-btn" onClick={() => moveLayer(idx, 1)} disabled={idx === layers.length - 1}>↓</button>
+                <button className="compose-reorder-btn compose-remove-btn" onClick={() => removeLayer(layer.id)}>✕</button>
               </div>
             </div>
 
-            <textarea
-              className="textarea compose-textarea"
-              placeholder="Enter text… (Enter for new line)"
-              value={block.text}
-              rows={2}
-              onChange={e => updateBlock(block.id, { text: e.target.value })}
-            />
+            {layer.type === 'text' ? (
+              <>
+                <textarea
+                  className="textarea compose-textarea"
+                  placeholder="Enter text…"
+                  value={layer.text}
+                  rows={2}
+                  onChange={e => updateLayer(layer.id, { text: e.target.value })}
+                />
 
-            <div className="compose-controls">
-              {/* 3×3 position grid */}
-              <div className="compose-pos-group">
-                <div className="compose-pos-label">Position</div>
-                <div className="compose-pos-grid">
-                  {POS_GRID.map((row, ri) => (
-                    <div key={ri} className="compose-pos-row">
-                      {row.map(pos => (
-                        <button
-                          key={pos}
-                          className={`compose-pos-btn ${block.position === pos ? 'active' : ''}`}
-                          onClick={() => updateBlock(block.id, { position: pos })}
-                          title={pos}
-                        >
-                          {POS_ARROW[pos]}
-                        </button>
+                <div className="compose-controls">
+                  <div className="compose-pos-group">
+                    <div className="compose-pos-label">Position</div>
+                    <div className="compose-pos-grid">
+                      {POS_GRID.map((row, ri) => (
+                        <div key={ri} className="compose-pos-row">
+                          {row.map(pos => (
+                            <button
+                              key={pos}
+                              className={`compose-pos-btn ${layer.position === pos ? 'active' : ''}`}
+                              onClick={() => updateLayer(layer.id, { position: pos })}
+                              title={pos}
+                            >
+                              {POS_ARROW[pos]}
+                            </button>
+                          ))}
+                        </div>
                       ))}
                     </div>
-                  ))}
-                </div>
-              </div>
+                  </div>
 
-              {/* Size + color */}
-              <div className="compose-right-controls">
-                <div className="compose-slider-row">
-                  <span className="compose-ctrl-label">Size</span>
-                  <input type="range" className="param-slider" min={10} max={40} step={1}
-                    value={block.size}
-                    onChange={e => updateBlock(block.id, { size: parseInt(e.target.value, 10) })} />
-                  <span className="compose-ctrl-val">{block.size}px</span>
-                </div>
+                  <div className="compose-right-controls">
+                    <div className="compose-slider-row">
+                      <span className="compose-ctrl-label">Size</span>
+                      <input type="range" className="param-slider" min={10} max={40} step={1}
+                        value={layer.size}
+                        onChange={e => updateLayer(layer.id, { size: parseInt(e.target.value, 10) })} />
+                      <span className="compose-ctrl-val">{layer.size}px</span>
+                    </div>
 
-                <div className="compose-slider-row">
-                  <span className="compose-ctrl-label">Pad</span>
-                  <input type="range" className="param-slider" min={0} max={20} step={1}
-                    value={block.padding}
-                    onChange={e => updateBlock(block.id, { padding: parseInt(e.target.value, 10) })} />
-                  <span className="compose-ctrl-val">{block.padding}px</span>
-                </div>
+                    <div className="compose-slider-row">
+                      <span className="compose-ctrl-label">Pad</span>
+                      <input type="range" className="param-slider" min={0} max={20} step={1}
+                        value={layer.padding}
+                        onChange={e => updateLayer(layer.id, { padding: parseInt(e.target.value, 10) })} />
+                      <span className="compose-ctrl-val">{layer.padding}px</span>
+                    </div>
 
-                <div className="compose-color-row">
-                  <span className="compose-ctrl-label">Ink</span>
-                  <div className="compose-color-toggle">
-                    <button
-                      className={`compose-color-btn ${block.color === 'light' ? 'active' : ''}`}
-                      onClick={() => updateBlock(block.id, { color: 'light' })}
-                    >Light</button>
-                    <button
-                      className={`compose-color-btn ${block.color === 'dark' ? 'active' : ''}`}
-                      onClick={() => updateBlock(block.id, { color: 'dark' })}
-                    >Dark</button>
+                    <div className="compose-slider-row">
+                      <span className="compose-ctrl-label">Depth</span>
+                      <input type="range" className="param-slider" min={-5} max={5} step={1}
+                        value={layer.z}
+                        onChange={e => updateLayer(layer.id, { z: parseInt(e.target.value, 10) })} />
+                      <span className="compose-ctrl-val">
+                        {layer.z === 0 ? '0' : (layer.z > 0 ? `+${layer.z}` : `${layer.z}`)}
+                      </span>
+                    </div>
                   </div>
                 </div>
-              </div>
-            </div>
+              </>
+            ) : (
+              <>
+                {!layer.imageData ? (
+                  <div className="compose-bg-drop" style={{ minHeight: 60 }}
+                    onDragOver={e => e.preventDefault()}
+                    onDrop={e => { e.preventDefault(); loadImageForLayer(layer.id, e.dataTransfer.files[0]) }}
+                    onClick={() => {
+                      const input = document.createElement('input')
+                      input.type = 'file'
+                      input.accept = 'image/*'
+                      input.onchange = (e) => loadImageForLayer(layer.id, e.target.files[0])
+                      input.click()
+                    }}>
+                    <span style={{ fontSize: 12 }}>Drop or click to load image</span>
+                  </div>
+                ) : (
+                  <div style={{ display: 'flex', gap: 10, alignItems: 'flex-start', flexWrap: 'wrap', marginBottom: 10 }}>
+                    <img src={layer.imageData} alt="Layer" style={{ height: 48, objectFit: 'contain', border: '1px solid var(--border)', borderRadius: 4 }} />
+                    <button className="btn btn-ghost btn-sm" onClick={() => updateLayer(layer.id, { imageData: null })}>Replace</button>
+                  </div>
+                )}
+
+                <div className="compose-controls" style={{ marginTop: layer.imageData ? 0 : 8 }}>
+                  <div className="compose-pos-group">
+                    <div className="compose-pos-label">Position</div>
+                    <div className="compose-pos-grid">
+                      {POS_GRID.map((row, ri) => (
+                        <div key={ri} className="compose-pos-row">
+                          {row.map(pos => (
+                            <button
+                              key={pos}
+                              className={`compose-pos-btn ${layer.position === pos ? 'active' : ''}`}
+                              onClick={() => updateLayer(layer.id, { position: pos })}
+                              title={pos}
+                            >
+                              {POS_ARROW[pos]}
+                            </button>
+                          ))}
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+
+                  <div className="compose-right-controls">
+                    <div className="compose-slider-row">
+                      <span className="compose-ctrl-label">Depth</span>
+                      <input type="range" className="param-slider" min={-5} max={5} step={1}
+                        value={layer.z}
+                        onChange={e => updateLayer(layer.id, { z: parseInt(e.target.value, 10) })} />
+                      <span className="compose-ctrl-val">
+                        {layer.z === 0 ? '0' : (layer.z > 0 ? `+${layer.z}` : `${layer.z}`)}
+                      </span>
+                    </div>
+                  </div>
+                </div>
+              </>
+            )}
           </div>
         ))}
       </div>
 
+      {/* Save Layout */}
+      <div className="card">
+        <div className="card-label">Save Layout</div>
+        <div style={{ display: 'flex', gap: 8, marginBottom: 12 }}>
+          <input
+            type="text"
+            placeholder="Layout name…"
+            value={saveName}
+            onChange={e => setSaveName(e.target.value)}
+            onKeyPress={e => e.key === 'Enter' && handleSaveLayout()}
+            style={{ flex: 1, padding: '6px 8px', border: '1px solid var(--border)', borderRadius: 4 }}
+          />
+          <button className="btn btn-ghost btn-sm" onClick={handleSaveLayout} disabled={saving || !saveName.trim()}>
+            {saving ? 'Saving…' : 'Save'}
+          </button>
+        </div>
+      </div>
+
+      {/* Saved Layouts */}
+      {savedLayouts.length > 0 && (
+        <div className="card">
+          <div className="card-label">Saved Layouts</div>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+            {savedLayouts.map(layout => (
+              <div key={layout.id} style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: 8, backgroundColor: 'var(--bg-secondary)', borderRadius: 4 }}>
+                <div>
+                  <div style={{ fontWeight: 500 }}>{layout.name}</div>
+                  <div style={{ fontSize: 11, color: 'var(--muted)' }}>{layout.layers?.length || 0} layer{(layout.layers?.length || 0) !== 1 ? 's' : ''}</div>
+                </div>
+                <div style={{ display: 'flex', gap: 6 }}>
+                  <button className="btn btn-ghost btn-sm" onClick={() => handleLoadLayout(layout.id)}>
+                    Load
+                  </button>
+                  <button className="btn btn-ghost btn-sm" onClick={() => handleDeleteLayout(layout.id, layout.name)} style={{ color: 'var(--danger)' }}>
+                    Delete
+                  </button>
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
       {/* Preview */}
       <div className="card">
-        <div className="card-label">Preview — 576×136 mono</div>
-        <div className="compose-preview-box">
-          {preview
-            ? <img src={preview} alt="Compose preview" className="compose-preview-img" />
-            : <div className="compose-preview-placeholder">Click Preview to render</div>
-          }
-        </div>
+        <div className="card-label">Preview — 576×136 mono (stereo pair)</div>
+        {preview ? (
+          <div style={{ display: 'flex', gap: 12, marginTop: 10 }}>
+            <div style={{ flex: 1 }}>
+              <div style={{ fontSize: 11, color: 'var(--muted)', marginBottom: 6 }}>Left Eye</div>
+              <img src={preview.left} alt="Left eye" style={{ width: '100%', border: '1px solid var(--border)', borderRadius: 4 }} />
+            </div>
+            <div style={{ flex: 1 }}>
+              <div style={{ fontSize: 11, color: 'var(--muted)', marginBottom: 6 }}>Right Eye</div>
+              <img src={preview.right} alt="Right eye" style={{ width: '100%', border: '1px solid var(--border)', borderRadius: 4 }} />
+            </div>
+          </div>
+        ) : (
+          <div className="compose-preview-box">
+            <div className="compose-preview-placeholder">Click Preview to render stereo pair</div>
+          </div>
+        )}
       </div>
 
       {/* Actions */}

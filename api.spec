@@ -64,7 +64,7 @@ hidden = [
 ]
 
 a = Analysis(
-    ['api.py'],
+    ['api_v3.py'],
     pathex=[ROOT],
     binaries=[],
     datas=datas,
