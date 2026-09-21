@@ -10,7 +10,13 @@ ROOT = os.path.abspath('.')
 datas = [
     # Local protocol package
     ('protocol', 'protocol'),
+    # Starter 3D models — seeded into the data dir on first run
+    ('models', 'models'),
 ]
+
+# Seed the packaged app with any layouts saved from the dev checkout
+if os.path.exists(os.path.join(ROOT, 'layouts.json')):
+    datas.append((os.path.join(ROOT, 'layouts.json'), '.'))
 
 # Include Even Realities custom fonts when present (fall back to system fonts otherwise)
 for _font in [

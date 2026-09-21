@@ -9,6 +9,8 @@ import asyncio
 import base64
 import json
 import logging
+import shutil
+import sys
 import uvicorn
 from datetime import datetime
 from pathlib import Path
@@ -121,9 +123,60 @@ class Render3DPayload(BaseModel):
 
 
 MAX_DISPARITY = 10
-LAYOUTS_FILE = Path(__file__).parent / "layouts.json"
-MODELS_DIR = Path(__file__).parent / "models"
+
+
+def _bundle_dir() -> Path:
+    """Read-only resources shipped with the app.
+
+    PyInstaller unpacks a one-file build into sys._MEIPASS; running from
+    source it is just the repo root.
+    """
+    return Path(getattr(sys, "_MEIPASS", Path(__file__).parent))
+
+
+def _data_dir() -> Path:
+    """Writable storage for layouts and models.
+
+    A frozen build unpacks into a temp dir that is wiped when the process
+    exits, so anything the user creates has to live outside the bundle.
+    """
+    if getattr(sys, "frozen", False):
+        d = Path.home() / "Library" / "Application Support" / "KiroshiOS"
+    else:
+        d = Path(__file__).parent
+    d.mkdir(parents=True, exist_ok=True)
+    return d
+
+
+DATA_DIR = _data_dir()
+LAYOUTS_FILE = DATA_DIR / "layouts.json"
+MODELS_DIR = DATA_DIR / "models"
 MODELS_DIR.mkdir(exist_ok=True)
+
+
+def _seed_bundled_resources() -> None:
+    """Copy starter models and layouts out of the bundle on first run.
+
+    No-op when running from source, and never overwrites what is already
+    in the data dir.
+    """
+    if not getattr(sys, "frozen", False):
+        return
+
+    src_models = _bundle_dir() / "models"
+    if src_models.is_dir():
+        for obj_file in src_models.glob("*.obj"):
+            dest = MODELS_DIR / obj_file.name
+            if not dest.exists():
+                shutil.copy2(obj_file, dest)
+
+    src_layouts = _bundle_dir() / "layouts.json"
+    if src_layouts.is_file() and not LAYOUTS_FILE.exists():
+        shutil.copy2(src_layouts, LAYOUTS_FILE)
+
+
+_seed_bundled_resources()
+logger.info("Data dir: %s", DATA_DIR)
 
 
 # ── Layout Storage ────────────────────────────────────────────────────────────
