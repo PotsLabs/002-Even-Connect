@@ -55,15 +55,33 @@ chmod +x "$DEST"
 echo "--> Sidecar: binaries/api-$TARGET ($(du -sh "$DEST" | cut -f1))"
 
 # ── 6. Build Tauri app ────────────────────────────────────────────────────────
-echo "--> Building Tauri app..."
+# tauri.conf.json sets bundle targets to "all", so a plain `tauri build` also
+# produces a .dmg. Building the DMG mounts a scratch volume and registers the
+# copy inside it with LaunchServices — a registration that outlives the volume
+# and competes with /Applications when resolving `open -a KiroshiOS`.
+#
+# The DMG is a distribution artifact, not something the test loop needs, so
+# default to the .app only. Pass --dmg when you actually want a shippable image.
+BUNDLES="app"
+for arg in "$@"; do
+  case "$arg" in
+    --dmg) BUNDLES="app,dmg" ;;
+    *) echo "Unknown option: $arg"; exit 2 ;;
+  esac
+done
+
+echo "--> Building Tauri app (bundles: $BUNDLES)..."
 cd "$ROOT/frontend"
 npm install --silent
-npm run tauri build
+npm run tauri build -- --bundles "$BUNDLES"
 
 APP="$ROOT/frontend/src-tauri/target/release/bundle/macos/KiroshiOS.app"
 echo ""
 echo "==> Build complete!"
 echo "    App: $APP"
-echo "    Drag KiroshiOS.app to /Applications to install."
-echo "    Then open it once — macOS will ask for Bluetooth permission."
-echo "    Use the tray icon > 'Launch at Login' to enable auto-start."
+if [ "$BUNDLES" = "app" ]; then
+  echo "    Install with ./install.sh (no DMG built — pass --dmg if you need one)."
+else
+  echo "    DMG: $ROOT/frontend/src-tauri/target/release/bundle/dmg/"
+fi
+echo "    Bluetooth permission is granted per bundle id and survives reinstall."

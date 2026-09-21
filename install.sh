@@ -13,6 +13,14 @@
 # Bluetooth permission is deliberately NOT reset: the TCC grant is keyed on
 # the bundle id, survives reinstall, and resetting it would make macOS
 # re-prompt on every test cycle.
+#
+# On LaunchServices registrations: a DMG-based install legitimately produces
+# more than one — the mounted image and the copy dragged to /Applications both
+# register, and opening the app straight off the image registers that too. That
+# is normal macOS behaviour, not a fault. What matters is not the count but
+# which copy is running, so build.sh defaults to the .app bundle only (no DMG,
+# no scratch volume) and the checks below assert the running processes come
+# from /Applications rather than demanding a single registration.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)"
@@ -139,9 +147,12 @@ pgrep -fl "$APP_NAME" | grep "Contents/MacOS" | grep -v "^.*$INSTALLED" >/dev/nu
   && echo "    WARNING: a process is running from outside $INSTALLED" \
   || echo "    all processes run from $INSTALLED"
 
+# Informational only. Extra entries are expected after a DMG install or after
+# running the app off a mounted image; they matter only if one of them is what
+# actually launches, which the process check above already covers.
 if [ -x "$LSREGISTER" ]; then
-  REG="$("$LSREGISTER" -dump 2>/dev/null | grep -oE "/[^ ]*$APP_NAME" | sort -u | wc -l | tr -d ' ')"
-  echo "    registrations: $REG  (expect 1)"
+  echo "    registrations:"
+  "$LSREGISTER" -dump 2>/dev/null | grep -oE "/[^ ]*$APP_NAME" | sort -u | sed 's/^/      /'
 fi
 
 if curl -s -m 3 http://127.0.0.1:8000/api/status >/dev/null 2>&1; then
